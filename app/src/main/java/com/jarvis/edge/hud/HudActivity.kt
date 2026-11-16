@@ -3,31 +3,58 @@ package com.jarvis.edge.hud
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.os.Build
 import android.os.Bundle
+import android.view.View
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.jarvis.edge.core.AssistantState
 import com.jarvis.edge.service.JarvisService
+import kotlinx.coroutines.delay
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
-class HudActivity : ComponentActivity() {
+class HudActivity : ComponentActivity(), SensorEventListener {
+
+    private var sensorManager: SensorManager? = null
+    private var lightSensor: Sensor? = null
+    private var proxSensor: Sensor? = null
+    private val currentLux = mutableFloatStateOf(100f)
+    private var nearEnteredAtMs: Long = 0L
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -35,34 +62,160 @@ class HudActivity : ComponentActivity() {
         startJarvisService()
     }
 
+    @OptIn(ExperimentalFoundationApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        applyImmersiveUi()
+
+        sensorManager = getSystemService(SENSOR_SERVICE) as? SensorManager
+        lightSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_LIGHT)
+        proxSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_PROXIMITY)
+
         ensurePermissionsAndStart()
+
         setContent {
             val state by JarvisService.state.collectAsState()
             val message by JarvisService.message.collectAsState()
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black)
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    text = state.name,
-                    color = Color(0xFF38BDF8),
-                    fontSize = 36.sp,
-                    fontWeight = FontWeight.Bold,
+            val transcript by JarvisService.transcript.collectAsState()
+            val reply by JarvisService.reply.collectAsState()
+            val micLevel by JarvisService.micLevel.collectAsState()
+            val fillWhite by JarvisService.screenFillWhite.collectAsState()
+            val brightnessOverride by JarvisService.brightnessOverride.collectAsState()
+            val lux by currentLux
+            var clockText by remember { mutableStateOf("") }
+
+            LaunchedEffect(Unit) {
+                val fmt = DateTimeFormatter.ofPattern("h:mm a", Locale.US)
+                while (true) {
+                    clockText = LocalTime.now().format(fmt)
+                    delay(10_000L)
+                }
+            }
+
+            LaunchedEffect(lux, state, fillWhite, brightnessOverride) {
+                val lp = window.attributes
+                lp.screenBrightness = when {
+                    fillWhite -> 1.0f
+                    brightnessOverride != null -> brightnessOverride!!
+                    else -> hudBrightness(lux, state)
+                }
+                window.attributes = lp
+            }
+
+            if (fillWhite) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.White),
                 )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = message,
-                    color = Color(0xFFE2E8F0),
-                    fontSize = 18.sp,
-                )
+            } else {
+                val interaction = remember { MutableInteractionSource() }
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black)
+                        .combinedClickable(
+                            interactionSource = interaction,
+                            indication = null,
+                            onClick = { JarvisService.requestStopSpeaking(this@HudActivity) },
+                            onLongClick = {
+                                startActivity(Intent(this@HudActivity, SetupActivity::class.java))
+                            },
+                        )
+                        .padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (state == AssistantState.IDLE && clockText.isNotEmpty()) {
+                        Text(
+                            text = clockText,
+                            color = Color(0xFF64748B),
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Spacer(Modifier.height(16.dp))
+                    }
+
+                    JarvisOrb(state = state, micLevel = micLevel)
+                    Spacer(Modifier.height(20.dp))
+
+                    Text(
+                        text = state.name,
+                        color = Color(0xFF38BDF8),
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(8.dp))
+
+                    if (transcript.isNotBlank()) {
+                        Text(
+                            text = "\"$transcript\"",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 16.sp,
+                            textAlign = TextAlign.Center,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                    }
+
+                    Text(
+                        text = reply.ifBlank { message },
+                        color = Color(0xFFE2E8F0),
+                        fontSize = 18.sp,
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applyImmersiveUi()
+        lightSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        proxSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        sensorManager?.unregisterListener(this)
+    }
+
+    override fun onSensorChanged(event: SensorEvent) {
+        when (event.sensor.type) {
+            Sensor.TYPE_LIGHT -> {
+                currentLux.floatValue = event.values[0]
+                JarvisService.latestLux = event.values[0]
+            }
+            Sensor.TYPE_PROXIMITY -> {
+                val maxRange = proxSensor?.maximumRange ?: 5f
+                val isNear = event.values[0] < maxRange
+                val now = System.currentTimeMillis()
+                if (isNear) {
+                    nearEnteredAtMs = now
+                } else if (nearEnteredAtMs > 0L) {
+                    val held = now - nearEnteredAtMs
+                    nearEnteredAtMs = 0L
+                    if (held < 1000L && JarvisService.state.value == AssistantState.IDLE) {
+                        JarvisService.requestManualWake(this)
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    @Suppress("DEPRECATION")
+    private fun applyImmersiveUi() {
+        window.decorView.systemUiVisibility = (
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            )
     }
 
     private fun ensurePermissionsAndStart() {

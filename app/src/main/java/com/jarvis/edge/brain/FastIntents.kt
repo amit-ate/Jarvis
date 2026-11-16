@@ -45,6 +45,31 @@ object FastIntents {
     private val lightRegex = Regex(
         "^(?:what(?:'s| is)? the (?:ambient )?light level|how bright is it(?: in here)?|light level|ambient light)$"
     )
+    private val tvPowerRegex = Regex(
+        "^(?:turn|switch)\\s+(?:on|off)\\s+(?:the\\s+)?tv$|^tv\\s+(?:power|on|off)$"
+    )
+    private val tvVolumeUpRegex = Regex(
+        "^(?:tv\\s+volume\\s+up|turn\\s+up\\s+(?:the\\s+)?tv(?:\\s+volume)?|increase\\s+(?:the\\s+)?tv\\s+volume)$"
+    )
+    private val tvVolumeDownRegex = Regex(
+        "^(?:tv\\s+volume\\s+down|turn\\s+down\\s+(?:the\\s+)?tv(?:\\s+volume)?|decrease\\s+(?:the\\s+)?tv\\s+volume)$"
+    )
+    private val tvMuteRegex = Regex("^(?:mute\\s+(?:the\\s+)?tv|tv\\s+mute)$")
+    private val tvChannelUpRegex = Regex("^(?:tv\\s+channel\\s+up|next\\s+tv\\s+channel)$")
+    private val tvChannelDownRegex = Regex("^(?:tv\\s+channel\\s+down|previous\\s+tv\\s+channel)$")
+    private val tvInputRegex = Regex("^(?:tv\\s+input|switch\\s+(?:the\\s+)?tv\\s+input)$")
+    private val acPowerRegex = Regex(
+        "^(?:turn|switch)\\s+(?:on|off)\\s+(?:the\\s+)?(?:ac|air conditioner)$|^(?:ac|air conditioner)\\s+(?:power|on|off)$"
+    )
+    private val readThisRegex = Regex(
+        "^(?:read\\s+this|read\\s+(?:the\\s+)?text|read\\s+what(?:'s|\\s+is)\\s+(?:in\\s+front|written)(?:\\s+of\\s+you)?)$"
+    )
+    private val lookFrontHoldingRegex = Regex(
+        "^(?:what\\s+am\\s+i\\s+holding)$"
+    )
+    private val lookFrontSeeRegex = Regex(
+        "^(?:what\\s+do\\s+you\\s+see(?:\\s+in\\s+front)?|look\\s+at\\s+(?:this|me))$"
+    )
 
     fun match(text: String): ToolCall? {
         val norm = normalize(text)
@@ -109,6 +134,21 @@ object FastIntents {
 
         if (batteryRegex.matches(norm)) return ToolCall("battery_status", emptyMap())
         if (lightRegex.matches(norm)) return ToolCall("light_level", emptyMap())
+        if (tvPowerRegex.matches(norm)) return ToolCall("ir_send", mapOf("device" to "tv", "command" to "power"))
+        if (tvVolumeUpRegex.matches(norm)) return ToolCall("ir_send", mapOf("device" to "tv", "command" to "volume_up"))
+        if (tvVolumeDownRegex.matches(norm)) return ToolCall("ir_send", mapOf("device" to "tv", "command" to "volume_down"))
+        if (tvMuteRegex.matches(norm)) return ToolCall("ir_send", mapOf("device" to "tv", "command" to "mute"))
+        if (tvChannelUpRegex.matches(norm)) return ToolCall("ir_send", mapOf("device" to "tv", "command" to "channel_up"))
+        if (tvChannelDownRegex.matches(norm)) return ToolCall("ir_send", mapOf("device" to "tv", "command" to "channel_down"))
+        if (tvInputRegex.matches(norm)) return ToolCall("ir_send", mapOf("device" to "tv", "command" to "input"))
+        if (acPowerRegex.matches(norm)) return ToolCall("ir_send", mapOf("device" to "ac", "command" to "power"))
+        if (readThisRegex.matches(norm)) return ToolCall("read_text", mapOf("camera" to "back"))
+        if (lookFrontHoldingRegex.matches(norm)) {
+            return ToolCall("look", mapOf("camera" to "front", "question" to "what am i holding"))
+        }
+        if (lookFrontSeeRegex.matches(norm)) {
+            return ToolCall("look", mapOf("camera" to "back", "question" to norm))
+        }
 
         return null
     }

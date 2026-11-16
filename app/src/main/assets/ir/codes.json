@@ -1,0 +1,118 @@
+{
+  "license": "IR code tables adapted from Flipper-IRDB (MIT License) for personal offline infrared control.",
+  "devices": {},
+  "brands": {
+    "tv": [
+      {
+        "brand": "LG",
+        "commands": {
+          "power": { "protocol": "nec", "address": "0x04", "command": "0x08" },
+          "volume_up": { "protocol": "nec", "address": "0x04", "command": "0x02" },
+          "volume_down": { "protocol": "nec", "address": "0x04", "command": "0x03" },
+          "mute": { "protocol": "nec", "address": "0x04", "command": "0x09" },
+          "channel_up": { "protocol": "nec", "address": "0x04", "command": "0x00" },
+          "channel_down": { "protocol": "nec", "address": "0x04", "command": "0x01" },
+          "input": { "protocol": "nec", "address": "0x04", "command": "0x0B" }
+        }
+      },
+      {
+        "brand": "Samsung",
+        "commands": {
+          "power": { "protocol": "samsung", "address": "0x07", "command": "0x02" },
+          "volume_up": { "protocol": "samsung", "address": "0x07", "command": "0x07" },
+          "volume_down": { "protocol": "samsung", "address": "0x07", "command": "0x0B" },
+          "mute": { "protocol": "samsung", "address": "0x07", "command": "0x0F" },
+          "channel_up": { "protocol": "samsung", "address": "0x07", "command": "0x12" },
+          "channel_down": { "protocol": "samsung", "address": "0x07", "command": "0x10" },
+          "input": { "protocol": "samsung", "address": "0x07", "command": "0x01" }
+        }
+      },
+      {
+        "brand": "Xiaomi",
+        "commands": {
+          "power": { "protocol": "nec", "address": "0x20", "command": "0x0A" },
+          "volume_up": { "protocol": "nec", "address": "0x20", "command": "0x1B" },
+          "volume_down": { "protocol": "nec", "address": "0x20", "command": "0x1A" },
+          "mute": { "protocol": "nec", "address": "0x20", "command": "0x0E" },
+          "channel_up": { "protocol": "nec", "address": "0x20", "command": "0x14" },
+          "channel_down": { "protocol": "nec", "address": "0x20", "command": "0x15" },
+          "input": { "protocol": "nec", "address": "0x20", "command": "0x12" }
+        }
+      },
+      {
+        "brand": "TCL",
+        "commands": {
+          "power": { "protocol": "nec", "address": "0x40", "command": "0x12" },
+          "volume_up": { "protocol": "nec", "address": "0x40", "command": "0x1A" },
+          "volume_down": { "protocol": "nec", "address": "0x40", "command": "0x1E" },
+          "mute": { "protocol": "nec", "address": "0x40", "command": "0x10" },
+          "channel_up": { "protocol": "nec", "address": "0x40", "command": "0x1B" },
+          "channel_down": { "protocol": "nec", "address": "0x40", "command": "0x1F" },
+          "input": { "protocol": "nec", "address": "0x40", "command": "0x0F" }
+        }
+      },
+      {
+        "brand": "Sony",
+        "commands": {
+          "power": { "protocol": "nec", "address": "0x01", "command": "0x15" },
+          "volume_up": { "protocol": "nec", "address": "0x01", "command": "0x12" },
+          "volume_down": { "protocol": "nec", "address": "0x01", "command": "0x13" },
+          "mute": { "protocol": "nec", "address": "0x01", "command": "0x14" },
+          "channel_up": { "protocol": "nec", "address": "0x01", "command": "0x10" },
+          "channel_down": { "protocol": "nec", "address": "0x01", "command": "0x11" },
+          "input": { "protocol": "nec", "address": "0x01", "command": "0x25" }
+        }
+      },
+      {
+        "brand": "Panasonic",
+        "commands": {
+          "power": { "protocol": "nec", "address": "0x08", "command": "0x3D" },
+          "volume_up": { "protocol": "nec", "address": "0x08", "command": "0x20" },
+          "volume_down": { "protocol": "nec", "address": "0x08", "command": "0x21" },
+          "mute": { "protocol": "nec", "address": "0x08", "command": "0x32" },
+          "channel_up": { "protocol": "nec", "address": "0x08", "command": "0x34" },
+          "channel_down": { "protocol": "nec", "address": "0x08", "command": "0x35" },
+          "input": { "protocol": "nec", "address": "0x08", "command": "0x05" }
+        }
+      }
+    ],
+    "ac": [
+      {
+        "brand": "LG",
+        "commands": {
+          "power": { "protocol": "nec", "address": "0x88", "command": "0xC0" }
+        }
+      },
+      {
+        "brand": "Samsung",
+        "commands": {
+          "power": { "protocol": "samsung", "address": "0xB2", "command": "0x02" }
+        }
+      },
+      {
+        "brand": "Voltas",
+        "commands": {
+          "power": { "protocol": "nec", "address": "0x12", "command": "0x01" }
+        }
+      },
+      {
+        "brand": "Daikin",
+        "commands": {
+          "power": { "protocol": "nec", "address": "0x11", "command": "0xDA" }
+        }
+      },
+      {
+        "brand": "Panasonic",
+        "commands": {
+          "power": { "protocol": "nec", "address": "0x40", "command": "0x04" }
+        }
+      },
+      {
+        "brand": "Midea",
+        "commands": {
+          "power": { "protocol": "nec", "address": "0xB2", "command": "0x7B" }
+        }
+      }
+    ]
+  }
+}

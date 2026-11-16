@@ -16,6 +16,7 @@ import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicReference
 
 interface Speaker {
+    val isStopped: Boolean get() = false
     suspend fun speak(sentence: String)
     fun stop()
 }
@@ -32,6 +33,9 @@ class SherpaSpeaker(
     private val activeTrack = AtomicReference<AudioTrack?>(null)
     @Volatile
     private var stopped = false
+
+    override val isStopped: Boolean
+        get() = stopped
 
     init {
         cacheDir.mkdirs()
