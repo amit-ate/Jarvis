@@ -155,7 +155,7 @@ $S cmd appops set com.jarvis.edge RUN_ANY_IN_BACKGROUND allow
 
 Do not assume Q4_0 wins: llama.cpp's repacked Q4_0 fast path needs the `dotprod` instruction, which this CPU lacks. The measurement decides.
 
-- [ ] **Step 4:** Write `bench/run-llm-bench.sh`: push `llama-bench` and each model to `/data/local/tmp/jarvis/`, run `taskset f0 ./llama-bench -m <model> -t 4 -p 256 -n 64 -r 3 -o md`, read battery temperature before and after, append rows to `bench/results.md`, delete the model from `/data/local/tmp` afterwards.
+- [ ] **Step 4:** Write `bench/run-llm-bench.sh`: push `llama-bench` and each model to `/data/local/tmp/jarvis/`, run `taskset f0 ./llama-bench -m <model> -t 4 --poll 0 -p 256 -n 64 -r 3 -o md`, read battery temperature before and after, append rows to `bench/results.md`, delete the model from `/data/local/tmp` afterwards.
 - [ ] **Step 5:** Run it. Verify: `bench/results.md` has one row per file with prompt tokens/s, generation tokens/s and temperature rise.
 - [ ] **Step 6:** Apply the selection rule and write the result into `bench/results.md` as `LLM_MODEL=`:
   - Keep candidates with generation of 7 tokens/s or more and prompt reading of 25 tokens/s or more.
@@ -379,6 +379,7 @@ Tools in this task:
 - [ ] **Step 3:** Implement `PromptBuilder`. System text: one sentence of persona (brief, spoken style, two sentences or fewer per answer), then one line per tool as `name(arg|arg): description`. Grammar (GBNF) root is `"SAY: " text | toolcall`, with one alternative per tool and enumerated values taken from `Tool.params`. The chat template is chosen by `templateName` to match `LLM_MODEL`.
 - [ ] **Step 4:** Implement the JNI layer. Requirements the signature does not decide:
   - Call `sched_setaffinity` with mask `0xf0` on the calling thread before creating the context, so llama.cpp's worker threads inherit it; 4 threads for both generation and batch.
+  - Create a `ggml_threadpool` with `ggml_threadpool_params_default(4)` and **`tpp.poll = 0`** (disabling `llama.cpp`'s default `poll = 50` busy-spin barrier polling, which otherwise livelocks on Android when `system_server` preempts one of `cpu4`–`cpu7`), and attach it via `llama_attach_threadpool(ctx, tp, tp)`.
   - `use_mmap = true`, no GPU layers.
   - Keep one context alive between calls. On each call, find the longest common token prefix with the previous prompt, remove only the cached tokens after it, and evaluate the remainder. Report the reused count as `cachedTokens`.
   - Sampling: grammar sampler first, then temperature `0.3`, top-p `0.9`.
