@@ -1,0 +1,9 @@
+models/
+build/
+.gradle/
+local.properties
+bench/out/
+bench/out-a73/
+.DS_Store
+*.apk
+*.aab
