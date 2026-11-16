@@ -41,8 +41,8 @@ class ModelPaths(
     fun llmRelative(): String = "llm/$llmFileName"
 
     fun vlmRequired(): List<String> = listOf(
-        "vlm/SmolVLM-500M-Instruct-Q8_0.gguf",
-        "vlm/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf",
+        "vlm/SmolVLM-256M-Instruct-Q8_0.gguf",
+        "vlm/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf",
     )
 
     fun allRequired(): List<String> = speechRequired() + llmRelative() + vlmRequired()

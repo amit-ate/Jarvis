@@ -51,24 +51,20 @@ class PromptBuilder(
             tools.forEachIndexed { index, tool ->
                 append("tool-$index ::= \"{\\\"tool\\\":\\\"${escapeGbnfLiteral(tool.name)}\\\",\\\"args\\\":{")
                 val entries = tool.params.entries.toList()
-                if (entries.isNotEmpty()) {
-                    append("\"")
-                    entries.forEachIndexed { paramIdx, (paramName, allowed) ->
-                        if (paramIdx > 0) append(" \",\" \"")
-                        append("\\\"${escapeGbnfLiteral(paramName)}\\\":")
-                        if (allowed != null && allowed.isNotEmpty()) {
-                            append("\" (")
-                            append(
-                                allowed.joinToString(" | ") { v ->
-                                    "\"\\\"${escapeGbnfLiteral(v)}\\\"\""
-                                }
-                            )
-                            append(") \"")
-                        } else {
-                            append("\" arg-string \"")
-                        }
+                entries.forEachIndexed { paramIdx, (paramName, allowed) ->
+                    if (paramIdx > 0) append(",")
+                    append("\\\"${escapeGbnfLiteral(paramName)}\\\":\"")
+                    if (allowed != null && allowed.isNotEmpty()) {
+                        append(" (")
+                        append(
+                            allowed.joinToString(" | ") { v ->
+                                "\"\\\"${escapeGbnfLiteral(v)}\\\"\""
+                            }
+                        )
+                        append(") \"")
+                    } else {
+                        append(" arg-string \"")
                     }
-                    append("\"")
                 }
                 appendLine("}}\"")
             }

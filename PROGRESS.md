@@ -1,8 +1,8 @@
 # Jarvis On-Device Assistant — Progress Tracker
 
-> **Last Updated:** 2026-11-17 02:48 IST  
+> **Last Updated:** 2026-11-17 04:10 IST  
 > **Device:** Xiaomi Redmi Note 5 Pro (`whyred`, serial `<serial>`, 6 GB RAM, Snapdragon 636, Android 9 / MIUI 11)  
-> **Current Phase:** Phase 0 **Done**; Phases 1–4 (Tasks 4–13) **Host Verified** (`51/51` JVM tests pass; `libllama_jni.so` + `app-debug.apk` + `app-debug-androidTest.apk` built); on-device install & acceptance tests pending USB reconnect (`<serial>`)
+> **Current Phase:** Phases 0–4 **Device Verified** on `<serial>` (all 3 instrumentation suites pass, live service/HUD/degraded/kill-recovery checks pass). Remaining items need a human: 20-command live voice acceptance, physical TV IR test, HUD dark/lit visual check, 24h soak
 
 ---
 
@@ -13,17 +13,17 @@
 | **Audit** | Hardware Audit & `HARDWARE_AND_JARVIS_REPORT.md` | **Done** | Fixed `Q4_0_4_4` / `dotprod` note in Section 3.2 |
 | **Phase 0** | Task 1: Toolchain, Git Repo & Device Prep | **Done** | Git initialized (`9b38260`, `f2a091d`); JDK 17.0.21, NDK `26.3.11579264`, CMake `3.22.1`, `stay_on_while_plugged_in=7`, `HOTWORD_COUNT=0` |
 | **Phase 0** | Task 2: Benchmark LLMs & Thermal Soak | **Done** | 12 candidates benchmarked (`--poll 0`); winner **`qwen2.5-0.5b-instruct-q4_0.gguf`** (`33.86–34.09` / `17.49–18.04 t/s`). 10-min thermal soak (`614s`, 12 iters): battery flat at `36.0°C`, `pp256` `33.45 -> 33.71 t/s`, `tg64` peaked at `16.54–17.46 t/s` (`3.75 -> 3.74` when `60°C` cluster limit tripped) |
-| **Phase 0** | Task 3: Fetch & Push Speech + Vision Models | **Done** | `push-models.sh` exited `0`; `/sdcard/Jarvis/models/*`: `asr-moonshine` (`119M`), `asr-zipformer` (`130M`), `kws` (`19M`), `llm` (`409M`), `tts` (`79M`), `vad` (`636K`), `vlm` (`520M`) |
-| **Phase 1** | Task 4: App Skeleton, State Machine & Service | **Host Verified** | Gradle 8.7 + `sherpa-onnx-1.13.8.aar`; `AssistantState`, `ModelPaths`, `JarvisService`, `HudActivity`; `6/6` JVM tests; APK built (`77M`), install pending USB reconnect |
-| **Phase 1** | Task 5: Microphone, Wake Word & Utterance Capture | **Host Verified** | `MicStream`, `WakeWord` (`SherpaWakeWord`, `GatedWakeWord`, `Earcon`), `SpeechSegmenter` (`SileroVad`); `6/6` JVM tests pass; device tests pending USB reconnect |
-| **Phase 1** | Task 6: Transcription & Speech Output | **Host Verified** | `SentenceSplitter`, `Transcriber` (`SherpaLiveTranscriber`, `SherpaMoonshineTranscriber`), `Speaker` (`SherpaSpeaker` w/ disk cache & `isStopped`); `3/3` JVM tests pass; device tests pending USB reconnect |
-| **Phase 2** | Task 7: Tool Types, Fast Intents & Core Tools | **Host Verified** | `ToolCall`, `FastIntents`, `Tool`, `ToolRegistry`, `TimeTools`, `TimerTools`, `DeviceTools`, `NotesTools`; `4/4` JVM tests pass |
-| **Phase 2** | Task 8: Language Model Engine (`llama_jni.cpp`) | **Host Verified** | Built `libllama_jni.so` (`arm64-v8a`, `-march=armv8-a -O3 -DNDEBUG`, `tpp.poll = 0`, `cpumask[4..7]`, `strict_cpu`, KV prefix reuse, GBNF grammar, `mtmd`); `PromptBuilderTest` `4/4` pass; `LlmEngineDeviceTest` compiled into `app-debug-androidTest.apk` (`930K`), device run pending USB reconnect |
-| **Phase 2** | Task 9: Brain & Full Voice Turn | **Host Verified** | `Brain`, `TurnController` wired into `JarvisService`; `BrainTest` `5/5` + `TurnControllerTest` `6/6` pass; missing-model & voice acceptance pending USB reconnect |
-| **Phase 2** | Task 10: Infrared Control (`consumerir`) | **Host Verified** | `IrEncoder` (`nec`, `samsung`), `IrCodes`, `IrTool`, `assets/ir/codes.json`, `SetupActivity`, IR `FastIntents`; `IrEncoderTest` `2/2`, `IrCodesTest` `2/2`, `IrToolTest` `2/2` pass; hardware blaster test pending USB reconnect |
-| **Phase 3** | Task 11: Camera, OCR & SmolVLM Scene Description | **Host Verified** | `CameraSnapshot` (CameraX `1.3.4`), `MlKitOcr` (`16.0.1`), `LlamaMtmdVlm` (`nativeDescribeImage`), `ReadTextTool`, `LookTool`, vision `FastIntents`; `VisionToolsTest` `3/3` pass; device camera/VLM check pending USB reconnect |
-| **Phase 4** | Task 12: Full-Screen Jarvis HUD | **Host Verified** | `JarvisOrb`, `hudBrightness`, updated `HudActivity` (immersive, `FLAG_KEEP_SCREEN_ON`, light/proximity sensors, tap-to-stop, long-press Setup); `HudBrightnessTest` `3/3` pass; visual/`gfxinfo` check pending USB reconnect |
-| **Phase 4** | Task 13: Boot Recovery, `HealthGuard` & 24h Soak | **Host Verified** | `HealthGuard`, `BootReceiver`, `WatchdogReceiver` (5-min `AlarmManager`), `JarvisService` full pipeline + memory unload/reload; `HealthGuardTest` `5/5` pass; `am kill`/reboot & 24h soak pending USB reconnect |
+| **Phase 0** | Task 3: Fetch & Push Speech + Vision Models | **Done** | `push-models.sh` exited `0`; `/sdcard/Jarvis/models/*`: `asr-moonshine` (`119M`), `asr-zipformer` (`130M`), `kws` (`19M`), `llm` (`409M`), `tts` (`79M`), `vad` (`636K`), `vlm` (now `266M`: `SmolVLM-256M-Instruct-Q8_0` + mmproj; 500M files removed). Fixed `kws/keywords.txt` (dropped line with token `▁J` absent from `tokens.txt`, which made `InitKeywords` exit `255`) |
+| **Phase 1** | Task 4: App Skeleton, State Machine & Service | **Device Verified** | Installed on `<serial>`; `JarvisService` `isForeground=true` 8s after `HudActivity` launch; process alive; `0` crashes |
+| **Phase 1** | Task 5: Microphone, Wake Word & Utterance Capture | **Device Verified** | `SpeechDeviceTest` `OK (1 test)` in `14.861s` (VAD, KWS, ASR on device) |
+| **Phase 1** | Task 6: Transcription & Speech Output | **Device Verified** | Covered by `SpeechDeviceTest` above (TTS cache prewarm + playback) |
+| **Phase 2** | Task 7: Tool Types, Fast Intents & Core Tools | **Host Verified** | `ToolCall`, `FastIntents`, `Tool`, `ToolRegistry`, `TimeTools`, `TimerTools`, `DeviceTools`, `NotesTools`; JVM tests pass |
+| **Phase 2** | Task 8: Language Model Engine (`llama_jni.cpp`) | **Device Verified** | `LlmEngineDeviceTest` `OK (3 tests)` in `118.584s` (`outputAlwaysParsesUnderGrammar`, `secondCallReusesSystemPrompt`, `stopsWhenCallbackReturnsFalse`); no GBNF parse errors after `PromptBuilder.grammar()` quote fix; test tools expanded to all 15 so `cachedTokens >= 100` is meaningful |
+| **Phase 2** | Task 9: Brain & Full Voice Turn | **Device Verified (partial)** | Missing-model degraded mode: LLM GGUF renamed → service `isForeground=true`, alive, `0` crashes; restored. 20-command live voice acceptance needs a human speaker |
+| **Phase 2** | Task 10: Infrared Control (`consumerir`) | **Device Verified (partial)** | IR transmit step of `VisionAndIrDeviceTest` passes; physical TV test needs a human |
+| **Phase 3** | Task 11: Camera, OCR & SmolVLM Scene Description | **Device Verified** | `VisionAndIrDeviceTest` `OK (1 test)` twice: VLM `20.1s` / `24.2s` (gate `<= 25s`, thin margin). Switched to `SmolVLM-256M-Instruct-Q8_0` (500M took `159.5s`), `image_min/max_tokens = 64`, `maxEdge = 384`, and pinned the calling thread to cores 4–7 during `describe` (mtmd's CLIP pool has no cpumask; unpinned runs varied `25.5s`–`93.3s`) |
+| **Phase 4** | Task 12: Full-Screen Jarvis HUD | **Device Verified (partial)** | `gfxinfo` steady state: `55/1207` janky = `4.56%` (gate `< 5%`); window overlapping startup warm-up: `77/1226` = `6.28%`. Dark/lit visual check needs a human |
+| **Phase 4** | Task 13: Boot Recovery, `HealthGuard` & 24h Soak | **Device Verified (partial)** | Hard-killed process (`am kill` did not kill the foreground proc; used `run-as kill -9`); MIUI logged `Reject RestartService` ×2; `WatchdogReceiver` (now `45s` alarm, also relaunches `HudActivity`) restarted it, `isForeground=true` after `36s`; `0` crashes. 24h soak pending |
 
 ---
 

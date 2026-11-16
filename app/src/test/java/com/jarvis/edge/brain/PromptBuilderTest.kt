@@ -71,5 +71,30 @@ class PromptBuilderTest {
         assertTrue("\"torch\"" in g.replace("\\", ""))
         assertTrue("on" in g && "off" in g)
         assertTrue("front" in g && "back" in g)
+        for (line in g.lines().filter { it.isNotBlank() }) {
+            var inString = false
+            var inClass = false
+            var escaped = false
+            for (ch in line) {
+                if (escaped) {
+                    escaped = false
+                    continue
+                }
+                if (ch == '\\') {
+                    escaped = true
+                } else if (inString) {
+                    if (ch == '"') inString = false
+                } else if (inClass) {
+                    if (ch == ']') inClass = false
+                } else {
+                    when (ch) {
+                        '"' -> inString = true
+                        '[' -> inClass = true
+                    }
+                }
+            }
+            assertFalse(inString, "Unclosed GBNF string literal on line: $line")
+            assertFalse(inClass, "Unclosed GBNF character class on line: $line")
+        }
     }
 }

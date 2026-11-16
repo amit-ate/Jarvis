@@ -13,6 +13,7 @@ class ModelPathsTest {
     fun `missing lists absent model files by relative path`(@TempDir tempDir: File) {
         val paths = ModelPaths(tempDir)
         assertTrue("vad/silero_vad.onnx" in paths.missing())
+        assertTrue("vlm/SmolVLM-256M-Instruct-Q8_0.gguf" in paths.vlmRequired())
     }
 
     @Test

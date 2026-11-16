@@ -88,7 +88,7 @@ class LookTool(
         onBeforeCapture: suspend () -> Unit = {},
     ) : this(
         captureAndDescribe = if (vlm == null) null else { facing, lowLight, question, onToken ->
-            val bitmap = capturer.capture(facing, maxEdge = 768, lowLight = lowLight)
+            val bitmap = capturer.capture(facing, maxEdge = 384, lowLight = lowLight)
             try {
                 vlm.describe(bitmap, question, onToken)
             } finally {

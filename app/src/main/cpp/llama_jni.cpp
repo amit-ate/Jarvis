@@ -48,6 +48,25 @@ ggml_threadpool_t create_big_core_threadpool(int n_threads) {
     return ggml_threadpool_new(&tpp);
 }
 
+// Pins the calling thread to the Cortex-A73 big cores (4-7) and restores the previous
+// affinity on destruction. mtmd creates its CLIP threadpool without a cpumask, so its
+// workers inherit this thread's affinity; without pinning they land on A53 cores and
+// every graph barrier waits on the slowest little core.
+struct ScopedBigCoreAffinity {
+    cpu_set_t previous{};
+    bool restore = false;
+    ScopedBigCoreAffinity() {
+        if (sched_getaffinity(0, sizeof(previous), &previous) != 0) return;
+        cpu_set_t big;
+        CPU_ZERO(&big);
+        for (int cpu = 4; cpu <= 7; ++cpu) CPU_SET(cpu, &big);
+        restore = sched_setaffinity(0, sizeof(big), &big) == 0;
+    }
+    ~ScopedBigCoreAffinity() {
+        if (restore) sched_setaffinity(0, sizeof(previous), &previous);
+    }
+};
+
 struct LlmSession {
     llama_model * model = nullptr;
     llama_context * ctx = nullptr;
@@ -481,10 +500,18 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeDescribeImage(
     std::vector<unsigned char> rgb(static_cast<size_t>(rgb_len));
     env->GetByteArrayRegion(jRgbBytes, 0, rgb_len, reinterpret_cast<jbyte *>(rgb.data()));
 
+    const auto vlm_t0 = std::chrono::steady_clock::now();
+    ScopedBigCoreAffinity big_core_affinity;
+    auto vlm_ms = [&vlm_t0]() {
+        return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - vlm_t0).count());
+    };
+
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0;
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
     llama_model * vlm_model = llama_model_load_from_file(model_path.c_str(), mparams);
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "VLM timing: model loaded at %lld ms", vlm_ms());
     if (!vlm_model) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag, "VLM failed to load model %s", model_path.c_str());
         return;
@@ -507,7 +534,10 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeDescribeImage(
     vparams.use_gpu = false;
     vparams.n_threads = 4;
     vparams.warmup = false;
+    vparams.image_min_tokens = 64;
+    vparams.image_max_tokens = 64;
     mtmd_context * mctx = vlm_ctx ? mtmd_init_from_file(mmproj_path.c_str(), vlm_model, vparams) : nullptr;
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "VLM timing: ctx+mmproj ready at %lld ms", vlm_ms());
 
     if (mctx && vlm_ctx) {
         mtmd_bitmap * bmp = mtmd_bitmap_init(
@@ -523,7 +553,11 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeDescribeImage(
 
         if (bmp && mtmd_tokenize(mctx, chunks, &inp, bitmaps, 1) == 0) {
             llama_pos n_past = 0;
-            if (mtmd_helper_eval_chunks(mctx, vlm_ctx, chunks, n_past, 0, 256, true, &n_past) == 0) {
+            const int eval_rc = mtmd_helper_eval_chunks(mctx, vlm_ctx, chunks, n_past, 0, 256, true, &n_past);
+            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                "VLM timing: image encode + prefill done at %lld ms (n_past=%d, rc=%d)",
+                vlm_ms(), static_cast<int>(n_past), eval_rc);
+            if (eval_rc == 0) {
                 const llama_vocab * vocab = llama_model_get_vocab(vlm_model);
                 llama_sampler * smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
                 llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.2f));
@@ -555,6 +589,8 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeDescribeImage(
                     if (llama_decode(vlm_ctx, one) != 0) break;
                 }
                 emit_piece(env, callback, on_token_mid, pending, true);
+                __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                    "VLM timing: generation done at %lld ms", vlm_ms());
                 llama_batch_free(one);
                 llama_sampler_free(smpl);
             }

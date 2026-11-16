@@ -74,14 +74,18 @@ ls -lh "$LLM_DIR"
 
 # Speech & Wake Word Models (Task 3, sherpa-onnx release assets)
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2" "$KWS_DIR"
+cat > "$KWS_DIR/keywords.txt" <<'EOF'
+▁HE Y ▁JA R V IS
+▁HE Y ▁JA R VI S
+EOF
 download_url     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" "$VAD_DIR/silero_vad.onnx"
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-moonshine-tiny-en-int8.tar.bz2" "$MOONSHINE_DIR"
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2" "$ZIPFORMER_DIR"
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_GB-alan-medium.tar.bz2" "$TTS_DIR"
 
-# Vision-Language Model (Task 3)
-download_hf "ggml-org/SmolVLM-500M-Instruct-GGUF" "SmolVLM-500M-Instruct-Q8_0.gguf"        "$VLM_DIR"
-download_hf "ggml-org/SmolVLM-500M-Instruct-GGUF" "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf" "$VLM_DIR"
+# Vision-Language Model (Task 3 / Task 11: SmolVLM-256M for <= 25s CPU inference on SDM636)
+download_hf "ggml-org/SmolVLM-256M-Instruct-GGUF" "SmolVLM-256M-Instruct-Q8_0.gguf"        "$VLM_DIR"
+download_hf "ggml-org/SmolVLM-256M-Instruct-GGUF" "mmproj-SmolVLM-256M-Instruct-Q8_0.gguf" "$VLM_DIR"
 
 echo "=== All Model Directories ==="
 du -sh "$MODELS_DIR"/*

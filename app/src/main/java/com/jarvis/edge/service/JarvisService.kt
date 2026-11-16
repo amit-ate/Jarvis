@@ -208,8 +208,8 @@ class JarvisService : Service() {
             val missingVlm = paths.missing().filter { it.startsWith("vlm/") }
             val vlmInstance = if (missingVlm.isEmpty()) {
                 LlamaMtmdVlm(
-                    modelFile = File(paths.root, "vlm/SmolVLM-500M-Instruct-Q8_0.gguf"),
-                    mmprojFile = File(paths.root, "vlm/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf"),
+                    modelFile = File(paths.root, "vlm/SmolVLM-256M-Instruct-Q8_0.gguf"),
+                    mmprojFile = File(paths.root, "vlm/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf"),
                 )
             } else {
                 null
@@ -383,7 +383,7 @@ class JarvisService : Service() {
         private const val CHANNEL_ID = "jarvis_edge_channel"
         private const val NOTIFICATION_ID = 1001
         private const val WATCHDOG_REQ_CODE = 3001
-        private const val WATCHDOG_INTERVAL_MS = 5 * 60_000L
+        private const val WATCHDOG_INTERVAL_MS = 45_000L
 
         const val ACTION_STOP_SPEAKING = "com.jarvis.edge.action.STOP_SPEAKING"
         const val ACTION_MANUAL_WAKE = "com.jarvis.edge.action.MANUAL_WAKE"

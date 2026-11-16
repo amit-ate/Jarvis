@@ -12,19 +12,33 @@ class LlmEngineDeviceTest {
 
     private val modelFile = File(ModelPaths.DEFAULT_ROOT, ModelPaths(File(ModelPaths.DEFAULT_ROOT)).llmRelative())
 
+    private fun fakeTool(
+        name: String,
+        desc: String,
+        params: Map<String, List<String>?> = emptyMap(),
+    ) = object : Tool {
+        override val name = name
+        override val description = desc
+        override val params = params
+        override suspend fun run(args: Map<String, String>) = ToolResult("ok", true)
+    }
+
     private fun testTools(): List<Tool> = listOf(
-        object : Tool {
-            override val name = "torch"
-            override val description = "Turn flashlight on or off"
-            override val params = mapOf("state" to listOf("on", "off"))
-            override suspend fun run(args: Map<String, String>) = ToolResult("ok", true)
-        },
-        object : Tool {
-            override val name = "remember"
-            override val description = "Save note"
-            override val params = mapOf("text" to null)
-            override suspend fun run(args: Map<String, String>) = ToolResult("ok", true)
-        },
+        fakeTool("get_time", "Speak current time"),
+        fakeTool("get_date", "Speak today's date"),
+        fakeTool("set_timer", "Set countdown timer", mapOf("minutes" to null, "seconds" to null)),
+        fakeTool("set_alarm", "Set alarm clock", mapOf("hour" to null, "minute" to null)),
+        fakeTool("cancel_timers", "Cancel all timers"),
+        fakeTool("torch", "Control flashlight", mapOf("state" to listOf("on", "off"))),
+        fakeTool("set_volume", "Set media volume %", mapOf("percent" to null)),
+        fakeTool("set_brightness", "Set screen brightness %", mapOf("percent" to null)),
+        fakeTool("battery_status", "Report battery percentage and temperature"),
+        fakeTool("light_level", "Read ambient lux level"),
+        fakeTool("remember", "Save a note for later", mapOf("text" to null)),
+        fakeTool("recall", "Search saved notes", mapOf("query" to null)),
+        fakeTool("ir_send", "Send infrared remote command", mapOf("device" to listOf("tv", "ac"), "command" to null)),
+        fakeTool("read_text", "Read visible text via OCR", mapOf("camera" to listOf("front", "back"))),
+        fakeTool("look", "Describe what camera sees", mapOf("camera" to listOf("front", "back"), "question" to null)),
     )
 
     @Test
