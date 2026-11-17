@@ -86,4 +86,19 @@ class VisionAndIrDeviceTest {
             ?.toLongOrNull() ?: 0L
         assertTrue("Expected MemAvailable > 800 MB, got ${memAvailKb / 1024} MB", memAvailKb > 800L * 1024L)
     }
+
+    @Test
+    fun frontCameraSnapshotCapturesValidBitmap() = runBlocking {
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val snapshotter = CameraSnapshot(ctx)
+        val photo = try {
+            snapshotter.capture(Facing.FRONT, maxEdge = 384, lowLight = false)
+        } finally {
+            snapshotter.shutdown()
+        }
+        assertTrue("Expected valid front camera bitmap width", photo.width > 0)
+        assertTrue("Expected valid front camera bitmap height", photo.height > 0)
+        assertTrue("Expected scaled maxEdge <= 384", maxOf(photo.width, photo.height) <= 384)
+        photo.recycle()
+    }
 }

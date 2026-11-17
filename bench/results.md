@@ -200,7 +200,7 @@ Each instrumentation run was preceded by `am force-stop com.jarvis.edge`. Withou
 | JVM unit tests | `51` tests, `0` failures, `0` errors, `0` skipped | all pass |
 | `SpeechDeviceTest` | `OK (1 test)`, `14.540s` (TTS prewarm cache + Silero VAD + Sherpa KWS + Moonshine ASR) | all pass |
 | `LlmEngineDeviceTest` | `OK (3 tests)`, `245.752s` total; all 20 prompts verified under GBNF grammar (17 tools) | all pass |
-| `VisionAndIrDeviceTest` | `OK (1 test)`, `25.876s` (IR transmit + ML Kit OCR + SmolVLM-256M scene describe) | all pass |
+| `VisionAndIrDeviceTest` | `OK (2 tests)`, `29.668s` (IR transmit + ML Kit OCR + SmolVLM-256M scene describe + front camera snapshot) | all pass |
 | `JarvisService` live | `isForeground=true`, process alive, `0` crashes | foreground |
 | HUD `gfxinfo` (steady state, 20s) | `55/1207` janky = `4.56%`; p90 `14ms`, p99 `20ms` | `< 5%` |
 | HUD `gfxinfo` (8–28s after launch, warm-up) | `77/1226` janky = `6.28%`; p90 `15ms`, p99 `21ms` | (overlaps model loading) |

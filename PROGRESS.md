@@ -21,7 +21,7 @@
 | **Phase 2** | Task 8: Language Model Engine (`llama_jni.cpp`) | **Device Verified** | `LlmEngineDeviceTest` `OK (3 tests)` in `245.752s` (all 20 prompts verified under GBNF grammar). Threadpool fix: changed `tpp.strict_cpu = false;` in `create_big_core_threadpool()`, eliminating CFS cpuset spin livelock. Added prompt index logging. |
 | **Phase 2** | Task 9: Brain & Full Voice Turn | **Device Verified (partial)** | Missing-model degraded mode verified. Live Brain logging added (`JarvisBrain`, `JarvisTurn`). 20-command live voice acceptance needs a human speaker. |
 | **Phase 2** | Task 10: Infrared Control (`consumerir`) | **Device Verified (partial)** | IR transmit step of `VisionAndIrDeviceTest` passes; physical TV test needs a human |
-| **Phase 3** | Task 11: Camera, OCR & SmolVLM Scene Description | **Device Verified** | `VisionAndIrDeviceTest` `OK (1 test)` in `25.876s`. `SmolVLM-256M-Instruct-Q8_0` with `image_min/max_tokens = 64`, `maxEdge = 384`, big-core affinity pinning (`cores 4–7`) during `describe`. |
+| **Phase 3** | Task 11: Camera, OCR & SmolVLM Scene Description | **Device Verified** | `VisionAndIrDeviceTest` `OK (2 tests)` in `29.668s` (rear + front camera snapshots, OCR, IR blaster, SmolVLM describe). Live voice verification confirmed: "What do you see?" -> rear camera scene description; "What am I holding?" -> front camera scene description; "Read this" -> OCR text recognition. `SmolVLM-256M-Instruct-Q8_0` with `image_min/max_tokens = 64`, `maxEdge = 384`, big-core affinity pinning (`cores 4–7`) during `describe`. |
 | **Phase 4** | Task 12: Full-Screen Jarvis HUD | **Device Verified (partial)** | `gfxinfo` steady state: `55/1207` janky = `4.56%` (gate `< 5%`); window overlapping startup warm-up: `77/1226` = `6.28%`. HUD tap initiates manual wake when `IDLE`. Dark/lit visual check needs a human |
 | **Phase 4** | Task 13: Boot Recovery, `HealthGuard` & 24h Soak | **Device Verified (partial)** | Hard-killed process (`run-as kill -9`); MIUI `Reject RestartService` ×2; `WatchdogReceiver` (45s alarm + activity relaunch) restarted it, `isForeground=true` after `36s`; `0` crashes. 24h soak pending |
 
@@ -58,7 +58,7 @@
 All 3 instrumentation test suites pass cleanly on-device:
 1. **`SpeechDeviceTest`**: `OK (1 test)` in **`14.540s`** (Silero VAD + Sherpa KWS wake + Moonshine ASR + TTS prewarm cache).
 2. **`LlmEngineDeviceTest`**: `OK (3 tests)` in **`245.752s`** (`outputAlwaysParsesUnderGrammar` across 20 prompts with 17 tool definitions, `secondCallReusesSystemPrompt`, `stopsWhenCallbackReturnsFalse`). Verified fix for CFS cpuset spin livelock (`tpp.strict_cpu = false`).
-3. **`VisionAndIrDeviceTest`**: `OK (1 test)` in **`25.876s`** (IR pattern transmit, ML Kit OCR text reading, SmolVLM-256M image description under big-core pinning).
+3. **`VisionAndIrDeviceTest`**: `OK (2 tests)` in **`29.668s`** (IR pattern transmit, ML Kit OCR text reading, SmolVLM-256M image description under big-core pinning, and front camera snapshot capture).
 
 ---
 
