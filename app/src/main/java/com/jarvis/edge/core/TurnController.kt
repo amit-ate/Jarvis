@@ -16,6 +16,7 @@ class TurnController(
     private val brain: Brain,
     private val speaker: Speaker,
     private val setState: (AssistantState) -> Unit,
+    private val preferStreaming: Boolean = false,
     private val onTranscript: (String) -> Unit = {},
     private val onReplyChunk: (String) -> Unit = {},
 ) {
@@ -59,7 +60,7 @@ class TurnController(
 
             setState(AssistantState.THINKING)
 
-            val transcript = if (FastIntents.isClosedCommand(finalLive) || accurate == null) {
+            val transcript = if (FastIntents.isClosedCommand(finalLive) || accurate == null || (preferStreaming && finalLive.length >= 3)) {
                 finalLive
             } else {
                 val accurateText = accurate.transcribe(samples).trim()

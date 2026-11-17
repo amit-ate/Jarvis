@@ -1,6 +1,6 @@
 package com.jarvis.edge.core
 
-class SentenceSplitter {
+class SentenceSplitter(private val splitClauses: Boolean = false) {
     private val buf = StringBuilder()
 
     fun push(token: String): List<String> {
@@ -33,13 +33,16 @@ class SentenceSplitter {
     private fun findSentenceBreak(text: CharSequence): Int {
         for (i in 0 until text.length - 1) {
             val c = text[i]
-            if (c != '.' && c != '!' && c != '?') continue
-            if (!text[i + 1].isWhitespace()) continue
-
-            if (c == '.' && isSingleLetterOrDigitAbbrev(text, i)) {
-                continue
+            if (c == '.' || c == '!' || c == '?') {
+                if (!text[i + 1].isWhitespace()) continue
+                if (c == '.' && isSingleLetterOrDigitAbbrev(text, i)) continue
+                return i
             }
-            return i
+            if (splitClauses && (c == ',' || c == ';' || c == ':') && i >= 30) {
+                if (text[i + 1].isWhitespace()) {
+                    return i
+                }
+            }
         }
         return -1
     }

@@ -154,7 +154,7 @@ class Brain(
         onSentence: suspend (String) -> Unit,
     ): String = coroutineScope {
         val raw = StringBuilder()
-        val splitter = SentenceSplitter()
+        val splitter = SentenceSplitter(splitClauses = true)
         val sentences = Channel<String>(Channel.UNLIMITED)
 
         val cancelledByConsumer = AtomicBoolean(false)

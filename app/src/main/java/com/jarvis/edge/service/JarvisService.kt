@@ -290,13 +290,15 @@ class JarvisService : Service() {
             val turnController = TurnController(
                 segmenter = SpeechSegmenter(
                     vad = turnVadInstance,
-                    trailingSilenceMs = 800,
-                    noSpeechTimeoutMs = 6000,
+                    trailingSilenceMs = 400,
+                    shortTrailingSilenceMs = 260,
+                    noSpeechTimeoutMs = 5000,
                 ),
                 live = live,
                 accurate = accurate,
                 brain = brain,
                 speaker = ttsSpeaker,
+                preferStreaming = true,
                 setState = { next ->
                     updateState(next)
                     updateNotification("Jarvis: ${next.name}")
