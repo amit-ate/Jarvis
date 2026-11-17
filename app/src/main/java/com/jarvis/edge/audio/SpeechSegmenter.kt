@@ -5,11 +5,13 @@ import com.k2fsa.sherpa.onnx.Vad as SherpaOnnxVad
 import com.k2fsa.sherpa.onnx.VadModelConfig
 import java.io.File
 import kotlin.math.ceil
+import kotlin.math.sqrt
 
 class SileroVad(
     modelFile: File,
-    private val threshold: Float = 0.5f,
+    private val threshold: Float = 0.38f,
     numThreads: Int = 1,
+    private val minRms: Float = 0.012f,
 ) : Vad {
     private val vad: SherpaOnnxVad
 
@@ -33,7 +35,11 @@ class SileroVad(
     }
 
     override fun isSpeech(frame: FloatArray): Boolean {
-        return vad.compute(frame) >= threshold
+        val prob = vad.compute(frame)
+        if (prob < threshold || frame.isEmpty()) return false
+        var sum = 0.0
+        for (s in frame) sum += s * s
+        return sqrt(sum / frame.size) >= minRms
     }
 
     override fun reset() {
@@ -63,6 +69,7 @@ class SpeechSegmenter(
     private val shortTrailingSilenceFrames = ceil(shortTrailingSilenceMs / FRAME_MS).toInt()
     private val noSpeechFrames = ceil(noSpeechTimeoutMs / FRAME_MS).toInt()
 
+    private val preSpeech = ArrayDeque<FloatArray>(PRE_SPEECH_FRAMES + 1)
     private val speechBuffers = ArrayList<FloatArray>()
     private val pendingSilence = ArrayList<FloatArray>()
     private var heardSpeech = false
@@ -76,6 +83,10 @@ class SpeechSegmenter(
 
         if (!heardSpeech) {
             if (!isSpeech) {
+                if (preSpeech.size >= PRE_SPEECH_FRAMES) {
+                    preSpeech.removeFirst()
+                }
+                preSpeech.addLast(frame.copyOf())
                 consecutiveSilence++
                 if (consecutiveSilence >= noSpeechFrames) {
                     reset()
@@ -85,6 +96,11 @@ class SpeechSegmenter(
             }
             heardSpeech = true
             consecutiveSilence = 0
+            while (preSpeech.isNotEmpty()) {
+                val pre = preSpeech.removeFirst()
+                speechBuffers.add(pre)
+                totalSampleCount += pre.size
+            }
             speechBuffers.add(frame.copyOf())
             totalSampleCount += frame.size
             if (totalFrames >= maxFrames) {
@@ -118,6 +134,7 @@ class SpeechSegmenter(
     }
 
     fun reset() {
+        preSpeech.clear()
         speechBuffers.clear()
         pendingSilence.clear()
         heardSpeech = false
@@ -142,5 +159,6 @@ class SpeechSegmenter(
         private const val SAMPLES_PER_SECOND = 16_000f
         private const val FRAME_SAMPLES = 512
         private const val FRAME_MS = 32f
+        private const val PRE_SPEECH_FRAMES = 6
     }
 }

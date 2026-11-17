@@ -75,8 +75,21 @@ ls -lh "$LLM_DIR"
 # Speech & Wake Word Models (Task 3, sherpa-onnx release assets)
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2" "$KWS_DIR"
 cat > "$KWS_DIR/keywords.txt" <<'EOF'
-▁HE Y ▁JA R V IS
 ▁HE Y ▁JA R VI S
+▁HE Y ▁JA R V IS
+▁HE Y ▁JA R V ES
+▁HE Y ▁JA R V US
+▁HE Y ▁ J AR VI S
+▁HE Y ▁ J AR V IS
+▁HA Y ▁JA R VI S
+▁HA Y ▁JA R V IS
+▁HI ▁JA R VI S
+▁HI ▁JA R V IS
+▁JA R VI S
+▁JA R V IS
+▁JA R V ES
+▁JA R V US
+▁ J AR VI S
 EOF
 download_url     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" "$VAD_DIR/silero_vad.onnx"
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-moonshine-tiny-en-int8.tar.bz2" "$MOONSHINE_DIR"

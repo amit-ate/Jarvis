@@ -32,12 +32,14 @@ import com.jarvis.edge.core.canMoveTo
 import com.jarvis.edge.hud.SetupActivity
 import com.jarvis.edge.tools.BatteryStatusTool
 import com.jarvis.edge.tools.CancelTimersTool
+import com.jarvis.edge.tools.GetWeatherTool
 import com.jarvis.edge.tools.LightLevelTool
 import com.jarvis.edge.tools.LookTool
 import com.jarvis.edge.tools.NotesStore
 import com.jarvis.edge.tools.ReadTextTool
 import com.jarvis.edge.tools.RecallTool
 import com.jarvis.edge.tools.RememberTool
+import com.jarvis.edge.tools.WebSearchTool
 import com.jarvis.edge.tools.SetAlarmTool
 import com.jarvis.edge.tools.SetBrightnessTool
 import com.jarvis.edge.tools.SetTimerTool
@@ -76,6 +78,7 @@ class JarvisService : Service() {
 
     private var speaker: SherpaSpeaker? = null
     private var vad: SileroVad? = null
+    private var turnVad: SileroVad? = null
     private var wakeWord: SherpaWakeWord? = null
     private var liveTranscriber: SherpaLiveTranscriber? = null
     private var accurateTranscriber: SherpaMoonshineTranscriber? = null
@@ -85,6 +88,9 @@ class JarvisService : Service() {
     private var mlKitOcr: MlKitOcr? = null
 
     private val manualWakeRequested = AtomicBoolean(false)
+    @Volatile private var diagFrames = 0
+    @Volatile private var diagVadFrames = 0
+    @Volatile private var diagMaxRms = 0f
 
     override fun onCreate() {
         super.onCreate()
@@ -115,6 +121,7 @@ class JarvisService : Service() {
         runCatching { liveTranscriber?.release() }
         runCatching { accurateTranscriber?.release() }
         runCatching { vad?.release() }
+        runCatching { turnVad?.release() }
         runCatching { llmEngine?.unload() }
         runCatching { notesStore?.close() }
         runCatching { cameraSnapshot?.shutdown() }
@@ -139,12 +146,26 @@ class JarvisService : Service() {
             }
 
             val healthGuard = HealthGuard.fromAndroidContext(this@JarvisService)
-            val vadInstance = SileroVad(File(paths.root, "vad/silero_vad.onnx")).also { vad = it }
+            val vadInstance = SileroVad(
+                modelFile = File(paths.root, "vad/silero_vad.onnx"),
+                threshold = 0.22f,
+                minRms = 0.005f,
+            ).also { vad = it }
+            val turnVadInstance = SileroVad(
+                modelFile = File(paths.root, "vad/silero_vad.onnx"),
+                threshold = 0.35f,
+                minRms = 0.010f,
+            ).also { turnVad = it }
             val kwsInstance = SherpaWakeWord(
                 kwsDir = File(paths.root, "kws"),
                 onInitThread = { LlamaJniEngine.pinCurrentThreadToBigCores() },
             ).also { wakeWord = it }
-            val gatedWake = GatedWakeWord(vad = vadInstance, inner = kwsInstance)
+            val loggingVad = object : com.jarvis.edge.audio.Vad {
+                override fun isSpeech(frame: FloatArray): Boolean =
+                    vadInstance.isSpeech(frame).also { if (it) diagVadFrames++ }
+                override fun reset() = vadInstance.reset()
+            }
+            val gatedWake = GatedWakeWord(vad = loggingVad, inner = kwsInstance)
 
             val live = SherpaLiveTranscriber(
                 modelDir = File(paths.root, "asr-zipformer"),
@@ -244,9 +265,16 @@ class JarvisService : Service() {
                     luxProvider = { latestLux },
                     onBeforeCapture = announceLook,
                 ),
+                GetWeatherTool(),
+                WebSearchTool(),
             )
             val registry = ToolRegistry(tools)
             val prompts = PromptBuilder(tools, templateName = "chatml")
+            if (jniEngine.isLoaded) {
+                runCatching {
+                    jniEngine.generate(prompts.prompt(emptyList(), "hi"), prompts.sayOnlyGrammar(), maxTokens = 1) { false }
+                }
+            }
             val activeLlm = if (missingLlm.isEmpty()) jniEngine else null
             val brain = Brain(
                 fast = FastIntents,
@@ -254,12 +282,17 @@ class JarvisService : Service() {
                 prompts = prompts,
                 tools = registry,
                 healthGuard = healthGuard,
+                log = { msg -> android.util.Log.i("JarvisBrain", msg) },
             )
 
             val mic = MicStream()
             val earcon = Earcon { suppressMs -> mic.suppressFor(suppressMs) }
             val turnController = TurnController(
-                segmenter = SpeechSegmenter(vad = vadInstance),
+                segmenter = SpeechSegmenter(
+                    vad = turnVadInstance,
+                    trailingSilenceMs = 800,
+                    noSpeechTimeoutMs = 6000,
+                ),
                 live = live,
                 accurate = accurate,
                 brain = brain,
@@ -268,8 +301,14 @@ class JarvisService : Service() {
                     updateState(next)
                     updateNotification("Jarvis: ${next.name}")
                 },
-                onTranscript = { t -> _transcript.value = t },
-                onReplyChunk = { r -> _reply.value = r },
+                onTranscript = { t ->
+                    android.util.Log.i("JarvisTurn", "HEARD: \"$t\"")
+                    _transcript.value = t
+                },
+                onReplyChunk = { r ->
+                    android.util.Log.i("JarvisTurn", "SAID: \"$r\"")
+                    _reply.value = r
+                },
             )
 
             updateState(AssistantState.IDLE, startStatus)
@@ -279,7 +318,17 @@ class JarvisService : Service() {
 
             try {
                 mic.frames().collect { frame ->
-                    _micLevel.value = computeRms(frame)
+                    val rms = computeRms(frame)
+                    _micLevel.value = rms
+                    diagFrames++
+                    if (rms > diagMaxRms) diagMaxRms = rms
+                    if (diagFrames >= 32) {
+                        android.util.Log.d(
+                            "JarvisWake",
+                            "1s: maxLevel=%.3f vadSpeechFrames=%d state=%s".format(diagMaxRms, diagVadFrames, _state.value),
+                        )
+                        diagFrames = 0; diagVadFrames = 0; diagMaxRms = 0f
+                    }
 
                     // Do not capture/process mic frames while speaking.
                     if (_state.value == AssistantState.SPEAKING) {
@@ -296,6 +345,7 @@ class JarvisService : Service() {
 
                     val woken = manualWakeRequested.getAndSet(false) || gatedWake.accept(frame)
                     if (woken) {
+                        android.util.Log.i("JarvisWake", "WAKE detected")
                         if (healthGuard.shouldUnloadChatModel() && jniEngine.isLoaded) {
                             jniEngine.unload()
                         } else if (!healthGuard.shouldUnloadChatModel() && !jniEngine.isLoaded && missingLlm.isEmpty()) {
@@ -304,6 +354,8 @@ class JarvisService : Service() {
                         }
 
                         earcon.playWake()
+                        updateState(AssistantState.LISTENING)
+                        updateNotification("Jarvis: LISTENING")
                         val ch = Channel<FloatArray>(Channel.UNLIMITED)
                         turnChannel = ch
                         turnJob = launch {
@@ -311,6 +363,7 @@ class JarvisService : Service() {
                                 turnController.runTurn(ch.receiveAsFlow())
                             } finally {
                                 ch.close()
+                                mic.suppressFor(250L)
                                 gatedWake.reset()
                             }
                         }

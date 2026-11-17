@@ -26,15 +26,17 @@ interface Vad {
 class GatedWakeWord(
     private val vad: Vad,
     private val inner: WakeWord,
-    private val preRollMs: Int = 500,
-    private val hangoverMs: Int = 1000,
+    private val preRollMs: Int = 800,
+    private val hangoverMs: Int = 1500,
 ) : WakeWord {
 
     private val preRollCapacity = ((preRollMs * SAMPLES_PER_MS) + FRAME_SAMPLES - 1) / FRAME_SAMPLES
     private val hangoverLimit = ((hangoverMs * SAMPLES_PER_MS) + FRAME_SAMPLES - 1) / FRAME_SAMPLES
+    private val maxActiveFrames = (6000 * SAMPLES_PER_MS) / FRAME_SAMPLES
     private val preRoll = ArrayDeque<FloatArray>(preRollCapacity + 1)
     private var active = false
     private var silentFrames = 0
+    private var activeFrames = 0
 
     override fun accept(frame: FloatArray): Boolean {
         val speech = vad.isSpeech(frame)
@@ -50,6 +52,7 @@ class GatedWakeWord(
             }
             active = true
             silentFrames = 0
+            activeFrames = 0
             while (preRoll.isNotEmpty()) {
                 val buffered = preRoll.removeFirst()
                 if (inner.accept(buffered)) {
@@ -64,6 +67,7 @@ class GatedWakeWord(
             return false
         }
 
+        activeFrames++
         if (speech) {
             silentFrames = 0
         } else {
@@ -76,9 +80,10 @@ class GatedWakeWord(
             return true
         }
 
-        if (!speech && silentFrames >= hangoverLimit) {
+        if ((!speech && silentFrames >= hangoverLimit) || activeFrames >= maxActiveFrames) {
             active = false
             silentFrames = 0
+            activeFrames = 0
             inner.reset()
         }
         return false
@@ -87,6 +92,7 @@ class GatedWakeWord(
     override fun reset() {
         active = false
         silentFrames = 0
+        activeFrames = 0
         preRoll.clear()
         vad.reset()
         inner.reset()
@@ -100,8 +106,8 @@ class GatedWakeWord(
 
 class SherpaWakeWord(
     kwsDir: File,
-    keywordsThreshold: Float = 0.25f,
-    keywordsScore: Float = 1.5f,
+    keywordsThreshold: Float = 0.08f,
+    keywordsScore: Float = 2.5f,
     numThreads: Int = 2,
     private val onInitThread: () -> Unit = {},
 ) : WakeWord {
@@ -110,11 +116,16 @@ class SherpaWakeWord(
     private var stream: OnlineStream
     private var threadPrepared = false
 
+    private fun pickOnnx(dir: File, stem: String): String {
+        val fp32 = File(dir, "$stem.onnx")
+        return if (fp32.exists()) fp32.absolutePath else File(dir, "$stem.int8.onnx").absolutePath
+    }
+
     init {
         val transducer = OnlineTransducerModelConfig(
-            encoder = File(kwsDir, "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx").absolutePath,
-            decoder = File(kwsDir, "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx").absolutePath,
-            joiner = File(kwsDir, "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx").absolutePath,
+            encoder = pickOnnx(kwsDir, "encoder-epoch-12-avg-2-chunk-16-left-64"),
+            decoder = pickOnnx(kwsDir, "decoder-epoch-12-avg-2-chunk-16-left-64"),
+            joiner = pickOnnx(kwsDir, "joiner-epoch-12-avg-2-chunk-16-left-64"),
         )
         val modelConfig = OnlineModelConfig(
             transducer = transducer,
@@ -127,11 +138,11 @@ class SherpaWakeWord(
         val config = KeywordSpotterConfig(
             featConfig = FeatureConfig(sampleRate = 16_000, featureDim = 80, dither = 0.0f),
             modelConfig = modelConfig,
-            maxActivePaths = 4,
+            maxActivePaths = 12,
             keywordsFile = File(kwsDir, "keywords.txt").absolutePath,
             keywordsScore = keywordsScore,
             keywordsThreshold = keywordsThreshold,
-            numTrailingBlanks = 1,
+            numTrailingBlanks = 0,
         )
         spotter = KeywordSpotter(null, config)
         stream = spotter.createStream("")
@@ -172,7 +183,7 @@ class Earcon(
 
     fun playWake() {
         val durationMs = (chimePcm.size * 1000L) / sampleRate
-        suppressMicMs(durationMs + 80L)
+        suppressMicMs(durationMs + 30L)
         val minBuf = AudioTrack.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_OUT_MONO,
@@ -198,7 +209,7 @@ class Earcon(
         try {
             track.write(chimePcm, 0, chimePcm.size)
             track.play()
-            Thread.sleep(durationMs + 20L)
+            Thread.sleep(durationMs + 10L)
         } finally {
             runCatching { track.stop() }
             track.release()
@@ -206,7 +217,7 @@ class Earcon(
     }
 
     private fun buildWakeChime(): ShortArray {
-        val totalSamples = (sampleRate * 0.10f).toInt()
+        val totalSamples = (sampleRate * 0.06f).toInt()
         val half = totalSamples / 2
         return ShortArray(totalSamples) { i ->
             val freq = if (i < half) 880.0 else 1320.0

@@ -88,7 +88,8 @@ class LlmEngineDeviceTest {
                 "Give me one safety tip",
             )
             val grammar = builder.grammar()
-            for (q in prompts) {
+            for ((idx, q) in prompts.withIndex()) {
+                android.util.Log.i("LlmDeviceTest", "prompt ${idx + 1}/${prompts.size} '$q'")
                 val sb = StringBuilder()
                 engine.generate(builder.prompt(emptyList(), q), grammar, maxTokens = 96) { piece ->
                     sb.append(piece)

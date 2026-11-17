@@ -19,6 +19,8 @@ interface Speaker {
     val isStopped: Boolean get() = false
     suspend fun speak(sentence: String)
     fun stop()
+    /** Clears a stale stop request so a tap during a previous turn cannot mute the next one. */
+    fun clearStop() {}
 }
 
 class SherpaSpeaker(
@@ -91,6 +93,10 @@ class SherpaSpeaker(
             runCatching { track.stop() }
             runCatching { track.release() }
         }
+    }
+
+    override fun clearStop() {
+        stopped = false
     }
 
     fun release() {

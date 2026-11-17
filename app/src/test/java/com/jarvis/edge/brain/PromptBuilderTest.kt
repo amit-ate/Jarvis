@@ -33,6 +33,8 @@ class PromptBuilderTest {
         FakeTool("ir_send", "Send IR", mapOf("device" to listOf("tv", "ac"), "command" to null)),
         FakeTool("read_text", "OCR text", mapOf("camera" to listOf("front", "back"))),
         FakeTool("look", "Describe scene", mapOf("camera" to listOf("front", "back"), "question" to null)),
+        FakeTool("get_weather", "Live weather", mapOf("location" to null)),
+        FakeTool("web_search", "Search web/Wikipedia", mapOf("query" to null)),
     )
 
     private val builder = PromptBuilder(realisticTools, templateName = "chatml")

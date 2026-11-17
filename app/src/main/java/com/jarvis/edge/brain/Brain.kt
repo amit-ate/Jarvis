@@ -19,6 +19,7 @@ class Brain(
     private val healthGuard: HealthGuard? = null,
     private val clockMillis: () -> Long = System::currentTimeMillis,
     private val llmDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val log: (String) -> Unit = {},
 ) {
     private val history = ArrayList<Turn>()
     private var lastTurnMillis: Long = 0L
@@ -31,7 +32,9 @@ class Brain(
 
         // Fast path is checked first so basic commands work even without a loaded LLM or while HOT.
         fast.match(userText)?.let { call ->
+            log("fast intent: $call")
             val result = tools.run(call)
+            log("tool result: spoken=\"${result.spoken}\" feed=${result.feedToModel?.take(120)}")
             if (result.feedToModel == null || llm == null || !llm.isLoaded || healthGuard?.level() == HealthGuard.Level.HOT) {
                 if (result.spoken.isNotBlank()) {
                     onSentence(result.spoken)
@@ -61,12 +64,14 @@ class Brain(
 
         val engine = llm
         if (engine == null || !engine.isLoaded) {
+            log("no LLM loaded (engine=${engine != null})")
             onSentence(NO_MODEL_MSG)
             return
         }
 
         val maxTokens = replyMaxTokens()
         val promptText = prompts.prompt(activeHistory(), userText)
+        val t0 = clockMillis()
         val rawOutput = streamSayOrCollectTool(
             engine = engine,
             prompt = promptText,
@@ -76,6 +81,7 @@ class Brain(
         )
 
         val parsed = parseModelOutput(rawOutput)
+        log("llm raw (${clockMillis() - t0} ms, maxTokens=$maxTokens): \"${rawOutput.take(300)}\" -> $parsed")
         when (parsed) {
             is ModelOutput.Say -> {
                 if (parsed.text.isNotBlank()) {
@@ -84,6 +90,7 @@ class Brain(
             }
             is ModelOutput.Call -> {
                 val result = tools.run(parsed.call)
+                log("tool result: spoken=\"${result.spoken}\" feed=${result.feedToModel?.take(120)}")
                 val feed = result.feedToModel
                 if (feed != null) {
                     val followUpPrompt = prompts.prompt(

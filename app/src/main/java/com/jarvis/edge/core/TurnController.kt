@@ -21,6 +21,7 @@ class TurnController(
 ) {
     suspend fun runTurn(frames: Flow<FloatArray>) {
         setState(AssistantState.LISTENING)
+        speaker.clearStop()
         segmenter.reset()
         live.reset()
 
@@ -31,7 +32,7 @@ class TurnController(
             try {
                 frames.collect { frame ->
                     val liveText = live.accept(frame)
-                    val shortTail = FastIntents.match(liveText) != null
+                    val shortTail = FastIntents.isClosedCommand(liveText)
                     when (val result = segmenter.accept(frame, shortTail = shortTail)) {
                         is SpeechSegmenter.Result.Pending -> Unit
                         is SpeechSegmenter.Result.NoSpeech -> {
@@ -58,7 +59,7 @@ class TurnController(
 
             setState(AssistantState.THINKING)
 
-            val transcript = if (FastIntents.match(finalLive) != null || accurate == null) {
+            val transcript = if (FastIntents.isClosedCommand(finalLive) || accurate == null) {
                 finalLive
             } else {
                 accurate.transcribe(samples)

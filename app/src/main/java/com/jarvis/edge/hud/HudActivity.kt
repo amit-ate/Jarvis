@@ -118,7 +118,13 @@ class HudActivity : ComponentActivity(), SensorEventListener {
                         .combinedClickable(
                             interactionSource = interaction,
                             indication = null,
-                            onClick = { JarvisService.requestStopSpeaking(this@HudActivity) },
+                            onClick = {
+                                if (state == AssistantState.SPEAKING) {
+                                    JarvisService.requestStopSpeaking(this@HudActivity)
+                                } else if (state == AssistantState.IDLE) {
+                                    JarvisService.requestManualWake(this@HudActivity)
+                                }
+                            },
                             onLongClick = {
                                 startActivity(Intent(this@HudActivity, SetupActivity::class.java))
                             },

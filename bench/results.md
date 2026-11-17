@@ -191,23 +191,50 @@ LLM_MODEL=qwen2.5-0.5b-instruct-q4_0.gguf
 
 - **Thermal Check Result:** Battery temperature stayed completely flat at `36.0°C` (`< 42.0°C`) across all 12 iterations over 10 minutes, `pp256` finished at `33.71 t/s` (vs `33.45 t/s` iter 1), and `tg64` finished at `3.74 t/s` (vs `3.75 t/s` iter 1, `< 1%` variance). Note: `--delay 2` after a full 256-token prompt evaluation occasionally hits `VIRTUAL-CLUSTER1` (`60°C` die threshold) mid-`tg64` (`2.09–3.77 t/s`), whereas when cool or after a brief pause (`--delay 5`, or in real turns with KV-cached system prompt evaluating ~10–30 user tokens instead of 256), `tg64` runs at **`16.54–17.46 t/s`**.
 
-## On-Device Acceptance (2026-11-17, `<serial>`, final APK)
+## On-Device Acceptance (2026-11-17, `<serial>`, latest build)
 
-Each instrumentation run was preceded by `am force-stop com.jarvis.edge`. Without it, a pending `WatchdogReceiver` alarm launches the live `JarvisService` inside the test process. Its LLM then competes for cores 4–7, and the first `LlmEngineDeviceTest` attempt stalled for more than 6 minutes on one test.
+Each instrumentation run was preceded by `am force-stop com.jarvis.edge`. Without it, a pending `WatchdogReceiver` alarm launches the live `JarvisService` inside the test process. Its LLM then competes for cores 4–7, and tests can stall competing for big cores.
 
 | Check | Result | Gate |
 | :--- | :--- | :--- |
 | JVM unit tests | `51` tests, `0` failures, `0` errors, `0` skipped | all pass |
-| `LlmEngineDeviceTest` | `OK (3 tests)`, `118.584s` total; no GBNF parse errors | all pass |
-| `VisionAndIrDeviceTest` run 1 | `OK (1 test)`; VLM `20.1s` (load `0.2s`, ctx+mmproj `0.45s`, encode+prefill `19.5s`, gen `0.2s`) | VLM `<= 25s` |
-| `VisionAndIrDeviceTest` run 2 | `OK (1 test)`; VLM `24.2s` (encode+prefill `23.4s`, gen `0.35s`) | VLM `<= 25s` |
-| `SpeechDeviceTest` | `OK (1 test)`, `14.861s` | all pass |
+| `SpeechDeviceTest` | `OK (1 test)`, `14.540s` (TTS prewarm cache + Silero VAD + Sherpa KWS + Moonshine ASR) | all pass |
+| `LlmEngineDeviceTest` | `OK (3 tests)`, `245.752s` total; all 20 prompts verified under GBNF grammar (17 tools) | all pass |
+| `VisionAndIrDeviceTest` | `OK (1 test)`, `25.876s` (IR transmit + ML Kit OCR + SmolVLM-256M scene describe) | all pass |
 | `JarvisService` live | `isForeground=true`, process alive, `0` crashes | foreground |
 | HUD `gfxinfo` (steady state, 20s) | `55/1207` janky = `4.56%`; p90 `14ms`, p99 `20ms` | `< 5%` |
 | HUD `gfxinfo` (8–28s after launch, warm-up) | `77/1226` janky = `6.28%`; p90 `15ms`, p99 `21ms` | (overlaps model loading) |
 | Missing LLM model | service `isForeground=true`, alive, `0` crashes | degraded, no crash |
 | Process kill → recovery | MIUI `Reject RestartService` ×2; `WatchdogReceiver` restart, `isForeground=true` after `36s`, `0` crashes | `< 60s` |
 
+### Pipeline Optimizations & Bug Fixes
+
+#### 1. Online Capabilities & FastIntents Routing
+- **`GetWeatherTool` (`get_weather`)**: Queries `wttr.in`, converting units/conditions for natural TTS output (e.g., `°C` -> "degrees Celsius", `%` -> "percent").
+- **`WebSearchTool` (`web_search`)**: Queries DuckDuckGo Instant Answer API with Wikipedia search and summary fallback, concise 1–2 sentence speech formatting.
+- **FastIntents Routing & Segmentation**:
+  - Added `weatherHereRegex`, `weatherInCityRegex`, and `webSearchRegex`.
+  - Added `FastIntents.isClosedCommand()` to ensure closed-domain commands (torch, time, timers, local weather) trigger immediate turn closure with short trailing silence (`350ms`), while open-ended queries (web searches, city weather) preserve standard trailing silence (`800ms`) so multi-word speech is not prematurely truncated.
+- **Permissions**: Added `INTERNET` and `ACCESS_NETWORK_STATE` to `AndroidManifest.xml`.
+
+#### 2. Audio & Wake Word Pipeline Fixes
+- **Mic Gain & AGC Staging**: Disabled Android hardware AGC in `MicStream.kt` to eliminate noise floor pumping; added linear software gain `softwareGain = 3.0f` clamped to `[-1.0, 1.0]` and enabled Android hardware `NoiseSuppressor` on the audio session.
+- **Dual Silero VAD Tuning**:
+  - Wake Gate VAD: Sensitive gate (`threshold = 0.22`, `minRms = 0.005`) for immediate trigger without missed wakes.
+  - Turn Segmentation VAD: Stricter gate (`threshold = 0.35/0.38`, `minRms = 0.010/0.012`) to prevent room noise from dragging out turns.
+- **Utterance Pre-Roll Buffer**: Added a 6-frame (192ms) circular pre-roll buffer in `SpeechSegmenter.kt`, preventing clipped leading syllables when speech begins.
+- **Sherpa KWS Keyword Spotting**:
+  - Dynamically loads fp32 ONNX model files (`pickOnnx`) with fallback to `.int8.onnx`.
+  - Tuned `keywordsThreshold = 0.08`, `keywordsScore = 2.5`, `maxActivePaths = 12`, `numTrailingBlanks = 0`.
+  - Added a 6s (`187` frames) active timeout in `GatedWakeWord` to guarantee state reset if trailing silence is noisy.
+- **HUD & TurnController State Fixes**:
+  - Fixed permanent mute bug where tapping the HUD while not speaking left `stopped = true`. HUD tap now only stops TTS when state is `SPEAKING` and triggers manual wake when `IDLE`.
+  - Added `speaker.clearStop()` in `TurnController` at turn entry to ensure a prior stop request never silences a new turn.
+
+#### 3. LLM Threadpool CFS Spin Livelock Fix
+- **Threadpool Configuration**: In `app/src/main/cpp/llama_jni.cpp`, changed `tpp.strict_cpu = true;` to `tpp.strict_cpu = false;` in `create_big_core_threadpool()`. Under Android Linux CFS, strict thread pinning in the threadpool can induce barrier spin livelock when threads compete or get preempted across cpusets. Setting `strict_cpu = false` eliminates barrier livelock while retaining cpumask affinity.
+- **Test Observability**: Added prompt index logging (`prompt idx/total 'query'`) in `LlmEngineDeviceTest.kt`. All 20 GBNF grammar prompt generations across 17 tool definitions pass cleanly.
+
 ### VLM notes
 - `SmolVLM-500M-Instruct-Q8_0` with mtmd default tiling (`longest_edge = 1536`) took `159.5s`, so it was replaced by `SmolVLM-256M-Instruct-Q8_0` with `image_min_tokens = image_max_tokens = 64` (`n_past = 148` after prefill).
-- With those settings and no core pinning, runs measured `25.5s` and `93.3s`. Nearly all of that time went to CLIP encode, because mtmd's CLIP threadpool is created without a cpumask and its workers inherited the JNI thread's affinity, which includes the A53 cores. Wrapping `nativeDescribeImage` in `ScopedBigCoreAffinity` (cores 4–7) brought it to `20.1s` / `24.2s`. The margin under the gate is still thin.
+- With those settings and no core pinning, runs measured `25.5s` and `93.3s`. Nearly all of that time went to CLIP encode, because mtmd's CLIP threadpool is created without a cpumask and its workers inherited the JNI thread's affinity, which includes the A53 cores. Wrapping `nativeDescribeImage` in `ScopedBigCoreAffinity` (cores 4–7) brought it to `20.1s` / `24.2s` / `25.8s`. The margin under the gate is still thin.

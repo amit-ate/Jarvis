@@ -13,10 +13,10 @@ object FastIntents {
     )
 
     private val timeRegex = Regex(
-        "^(?:what(?:'s| is)? the time|what time is it(?: right now| now)?|tell me the time|current time)$"
+        "^(?:(?:what|was)(?:'s| is)? (?:the )?time(?: is it)?(?: right now| now)?|what time is it(?: right now| now)?|tell me the time|current time|time now)$"
     )
     private val dateRegex = Regex(
-        "^(?:what(?:'s| is)? (?:the |today'?s )?date|what day is (?:it|today)|tell me the date)$"
+        "^(?:what(?:'s| is)? (?:the |today'?s )?date(?: today| now)?|what day is (?:it|today)(?: today)?|tell me the date)$"
     )
     private val timerMinSecRegex = Regex(
         "^(?:set (?:a )?timer(?: for)?|timer(?: for)?|countdown(?: for)?)\\s+(\\d+)\\s*(?:min|mins|minute|minutes)\\s*(?:and\\s*)?(\\d+)\\s*(?:sec|secs|second|seconds)$"
@@ -70,6 +70,22 @@ object FastIntents {
     private val lookFrontSeeRegex = Regex(
         "^(?:what\\s+do\\s+you\\s+see(?:\\s+in\\s+front)?|look\\s+at\\s+(?:this|me))$"
     )
+    private val weatherHereRegex = Regex(
+        "^(?:what(?:'s| is)? the weather(?: like)?(?: today| now| outside| right now)?|how(?:'s| is) the weather(?: outside| today)?|weather(?: today| outside| now| report| forecast)?|what(?:'s| is)? the temperature(?: outside| now)?)$"
+    )
+    private val weatherInCityRegex = Regex(
+        "^(?:what(?:'s| is)? the weather(?: like)? in|how(?:'s| is) the weather in|weather in|temperature in)\\s+([a-z][a-z\\s]{1,30}?)(?:\\s+(?:today|now|right now))?$"
+    )
+    private val webSearchRegex = Regex(
+        "^(?:search(?: online| the web)?(?: for)?|look up|google|find online|search wikipedia(?: for)?|tell me about|who is)\\s+(.+)$"
+    )
+
+    fun isClosedCommand(text: String): Boolean {
+        val call = match(text) ?: return false
+        if (call.name == "web_search") return false
+        if (call.name == "get_weather" && !call.args["location"].isNullOrEmpty()) return false
+        return true
+    }
 
     fun match(text: String): ToolCall? {
         val norm = normalize(text)
@@ -148,6 +164,15 @@ object FastIntents {
         }
         if (lookFrontSeeRegex.matches(norm)) {
             return ToolCall("look", mapOf("camera" to "back", "question" to norm))
+        }
+        if (weatherHereRegex.matches(norm)) {
+            return ToolCall("get_weather", mapOf("location" to ""))
+        }
+        weatherInCityRegex.matchEntire(norm)?.let { m ->
+            return ToolCall("get_weather", mapOf("location" to m.groupValues[1].trim()))
+        }
+        webSearchRegex.matchEntire(norm)?.let { m ->
+            return ToolCall("web_search", mapOf("query" to m.groupValues[1].trim()))
         }
 
         return null

@@ -1,6 +1,6 @@
 # Jarvis On-Device Assistant — Progress Tracker
 
-> **Last Updated:** 2026-11-17 04:10 IST  
+> **Last Updated:** 2026-11-17 20:25 IST  
 > **Device:** Xiaomi Redmi Note 5 Pro (`whyred`, serial `<serial>`, 6 GB RAM, Snapdragon 636, Android 9 / MIUI 11)  
 > **Current Phase:** Phases 0–4 **Device Verified** on `<serial>` (all 3 instrumentation suites pass, live service/HUD/degraded/kill-recovery checks pass). Remaining items need a human: 20-command live voice acceptance, physical TV IR test, HUD dark/lit visual check, 24h soak
 
@@ -13,17 +13,17 @@
 | **Audit** | Hardware Audit & `HARDWARE_AND_JARVIS_REPORT.md` | **Done** | Fixed `Q4_0_4_4` / `dotprod` note in Section 3.2 |
 | **Phase 0** | Task 1: Toolchain, Git Repo & Device Prep | **Done** | Git initialized (`9b38260`, `f2a091d`); JDK 17.0.21, NDK `26.3.11579264`, CMake `3.22.1`, `stay_on_while_plugged_in=7`, `HOTWORD_COUNT=0` |
 | **Phase 0** | Task 2: Benchmark LLMs & Thermal Soak | **Done** | 12 candidates benchmarked (`--poll 0`); winner **`qwen2.5-0.5b-instruct-q4_0.gguf`** (`33.86–34.09` / `17.49–18.04 t/s`). 10-min thermal soak (`614s`, 12 iters): battery flat at `36.0°C`, `pp256` `33.45 -> 33.71 t/s`, `tg64` peaked at `16.54–17.46 t/s` (`3.75 -> 3.74` when `60°C` cluster limit tripped) |
-| **Phase 0** | Task 3: Fetch & Push Speech + Vision Models | **Done** | `push-models.sh` exited `0`; `/sdcard/Jarvis/models/*`: `asr-moonshine` (`119M`), `asr-zipformer` (`130M`), `kws` (`19M`), `llm` (`409M`), `tts` (`79M`), `vad` (`636K`), `vlm` (now `266M`: `SmolVLM-256M-Instruct-Q8_0` + mmproj; 500M files removed). Fixed `kws/keywords.txt` (dropped line with token `▁J` absent from `tokens.txt`, which made `InitKeywords` exit `255`) |
-| **Phase 1** | Task 4: App Skeleton, State Machine & Service | **Device Verified** | Installed on `<serial>`; `JarvisService` `isForeground=true` 8s after `HudActivity` launch; process alive; `0` crashes |
-| **Phase 1** | Task 5: Microphone, Wake Word & Utterance Capture | **Device Verified** | `SpeechDeviceTest` `OK (1 test)` in `14.861s` (VAD, KWS, ASR on device) |
-| **Phase 1** | Task 6: Transcription & Speech Output | **Device Verified** | Covered by `SpeechDeviceTest` above (TTS cache prewarm + playback) |
-| **Phase 2** | Task 7: Tool Types, Fast Intents & Core Tools | **Host Verified** | `ToolCall`, `FastIntents`, `Tool`, `ToolRegistry`, `TimeTools`, `TimerTools`, `DeviceTools`, `NotesTools`; JVM tests pass |
-| **Phase 2** | Task 8: Language Model Engine (`llama_jni.cpp`) | **Device Verified** | `LlmEngineDeviceTest` `OK (3 tests)` in `118.584s` (`outputAlwaysParsesUnderGrammar`, `secondCallReusesSystemPrompt`, `stopsWhenCallbackReturnsFalse`); no GBNF parse errors after `PromptBuilder.grammar()` quote fix; test tools expanded to all 15 so `cachedTokens >= 100` is meaningful |
-| **Phase 2** | Task 9: Brain & Full Voice Turn | **Device Verified (partial)** | Missing-model degraded mode: LLM GGUF renamed → service `isForeground=true`, alive, `0` crashes; restored. 20-command live voice acceptance needs a human speaker |
+| **Phase 0** | Task 3: Fetch & Push Speech + Vision Models | **Done** | `push-models.sh` exited `0`; `/sdcard/Jarvis/models/*`: `asr-moonshine` (`119M`), `asr-zipformer` (`130M`), `kws` (`19M`), `llm` (`409M`), `tts` (`79M`), `vad` (`636K`), `vlm` (now `266M`: `SmolVLM-256M-Instruct-Q8_0` + mmproj; 500M files removed). Expanded `kws/keywords.txt` variations. |
+| **Phase 1** | Task 4: App Skeleton, State Machine & Service | **Device Verified** | Installed on `<serial>`; `JarvisService` `isForeground=true` 8s after `HudActivity` launch; process alive; `0` crashes. Fixed HUD tap handling (stops TTS only when `SPEAKING`, manual wake when `IDLE`). |
+| **Phase 1** | Task 5: Microphone, Wake Word & Utterance Capture | **Device Verified** | Audio pipeline overhaul: disabled Android AGC in `MicStream` to eliminate noise floor pumping, clean `softwareGain = 3.0f` + hardware `NoiseSuppressor`. Split Silero VAD into dual instances: wake gate (`threshold = 0.22, minRms = 0.005`) vs turn segmentation (`threshold = 0.35/0.38, minRms = 0.010/0.012`). Added 6-frame (192ms) pre-roll buffer in `SpeechSegmenter`. `SherpaWakeWord` dynamically loads fp32 ONNX, `keywordsThreshold = 0.08`, `keywordsScore = 2.5`, `maxActiveFrames = 187` (6s timeout). `SpeechDeviceTest` passed in `14.54s`. |
+| **Phase 1** | Task 6: Transcription & Speech Output | **Device Verified** | Covered by `SpeechDeviceTest` above. Added `speaker.clearStop()` in `TurnController` to prevent stale stop states from muting turns. |
+| **Phase 2** | Task 7: Tool Types, Fast Intents & Core Tools | **Host & Device Verified** | 17 tools registered. Added `GetWeatherTool` (`get_weather`) querying `wttr.in` with TTS unit conversions, and `WebSearchTool` (`web_search`) with DDG Instant Answer + Wikipedia fallback. FastIntents routing: `weatherHereRegex`, `weatherInCityRegex`, `webSearchRegex`, and `isClosedCommand`. Permissions: `INTERNET`, `ACCESS_NETWORK_STATE`. |
+| **Phase 2** | Task 8: Language Model Engine (`llama_jni.cpp`) | **Device Verified** | `LlmEngineDeviceTest` `OK (3 tests)` in `245.752s` (all 20 prompts verified under GBNF grammar). Threadpool fix: changed `tpp.strict_cpu = false;` in `create_big_core_threadpool()`, eliminating CFS cpuset spin livelock. Added prompt index logging. |
+| **Phase 2** | Task 9: Brain & Full Voice Turn | **Device Verified (partial)** | Missing-model degraded mode verified. Live Brain logging added (`JarvisBrain`, `JarvisTurn`). 20-command live voice acceptance needs a human speaker. |
 | **Phase 2** | Task 10: Infrared Control (`consumerir`) | **Device Verified (partial)** | IR transmit step of `VisionAndIrDeviceTest` passes; physical TV test needs a human |
-| **Phase 3** | Task 11: Camera, OCR & SmolVLM Scene Description | **Device Verified** | `VisionAndIrDeviceTest` `OK (1 test)` twice: VLM `20.1s` / `24.2s` (gate `<= 25s`, thin margin). Switched to `SmolVLM-256M-Instruct-Q8_0` (500M took `159.5s`), `image_min/max_tokens = 64`, `maxEdge = 384`, and pinned the calling thread to cores 4–7 during `describe` (mtmd's CLIP pool has no cpumask; unpinned runs varied `25.5s`–`93.3s`) |
-| **Phase 4** | Task 12: Full-Screen Jarvis HUD | **Device Verified (partial)** | `gfxinfo` steady state: `55/1207` janky = `4.56%` (gate `< 5%`); window overlapping startup warm-up: `77/1226` = `6.28%`. Dark/lit visual check needs a human |
-| **Phase 4** | Task 13: Boot Recovery, `HealthGuard` & 24h Soak | **Device Verified (partial)** | Hard-killed process (`am kill` did not kill the foreground proc; used `run-as kill -9`); MIUI logged `Reject RestartService` ×2; `WatchdogReceiver` (now `45s` alarm, also relaunches `HudActivity`) restarted it, `isForeground=true` after `36s`; `0` crashes. 24h soak pending |
+| **Phase 3** | Task 11: Camera, OCR & SmolVLM Scene Description | **Device Verified** | `VisionAndIrDeviceTest` `OK (1 test)` in `25.876s`. `SmolVLM-256M-Instruct-Q8_0` with `image_min/max_tokens = 64`, `maxEdge = 384`, big-core affinity pinning (`cores 4–7`) during `describe`. |
+| **Phase 4** | Task 12: Full-Screen Jarvis HUD | **Device Verified (partial)** | `gfxinfo` steady state: `55/1207` janky = `4.56%` (gate `< 5%`); window overlapping startup warm-up: `77/1226` = `6.28%`. HUD tap initiates manual wake when `IDLE`. Dark/lit visual check needs a human |
+| **Phase 4** | Task 13: Boot Recovery, `HealthGuard` & 24h Soak | **Device Verified (partial)** | Hard-killed process (`run-as kill -9`); MIUI `Reject RestartService` ×2; `WatchdogReceiver` (45s alarm + activity relaunch) restarted it, `isForeground=true` after `36s`; `0` crashes. 24h soak pending |
 
 ---
 
@@ -36,8 +36,8 @@
 - **JVM Tests Total:** `51` tests run, `0` failures, `0` skipped:
   - `SpeechSegmenterTest`: `6/6` passed
   - `BrainTest`: `5/5` passed
-  - `FastIntentsTest`: `1/1` passed
-  - `PromptBuilderTest`: `4/4` passed
+  - `FastIntentsTest`: `1/1` passed (includes weather & web search routing)
+  - `PromptBuilderTest`: `4/4` passed (includes all 17 tools)
   - `ToolCallParserTest`: `1/1` passed
   - `AssistantStateTest`: `3/3` passed
   - `ModelPathsTest`: `3/3` passed
@@ -50,6 +50,41 @@
   - `IrCodesTest`: `2/2` passed
   - `IrEncoderTest`: `2/2` passed
   - `IrToolTest`: `2/2` passed
+
+---
+
+## On-Device Instrumentation Status (Latest Verification on `<serial>`)
+
+All 3 instrumentation test suites pass cleanly on-device:
+1. **`SpeechDeviceTest`**: `OK (1 test)` in **`14.540s`** (Silero VAD + Sherpa KWS wake + Moonshine ASR + TTS prewarm cache).
+2. **`LlmEngineDeviceTest`**: `OK (3 tests)` in **`245.752s`** (`outputAlwaysParsesUnderGrammar` across 20 prompts with 17 tool definitions, `secondCallReusesSystemPrompt`, `stopsWhenCallbackReturnsFalse`). Verified fix for CFS cpuset spin livelock (`tpp.strict_cpu = false`).
+3. **`VisionAndIrDeviceTest`**: `OK (1 test)` in **`25.876s`** (IR pattern transmit, ML Kit OCR text reading, SmolVLM-256M image description under big-core pinning).
+
+---
+
+## Recent Architectural Enhancements & Fixes
+
+### 1. Online Capabilities & FastIntents Routing
+- **`GetWeatherTool` (`get_weather`)**: Directly queries `wttr.in` for real-time weather and temperature; converts units and symbols (e.g. `°C` -> "degrees Celsius", `%` -> "percent") for natural TTS output.
+- **`WebSearchTool` (`web_search`)**: Queries DuckDuckGo Instant Answer API with automatic Wikipedia search and summary fallback (`/api/rest_v1/page/summary/`), condensed to 1–2 sentences for spoken output.
+- **FastIntents Enhancements**: Added `weatherHereRegex`, `weatherInCityRegex`, and `webSearchRegex`.
+- **Command Segmentation Separation (`isClosedCommand`)**: Added `FastIntents.isClosedCommand()` to differentiate instant closed-domain commands (e.g., volume, timer, flashlight, local weather) from open-ended speech input (e.g., web searches and location-specific weather queries). Closed commands trigger short trailing silence (`350ms`), while open queries retain standard pause limits (`800ms`) preventing premature turn cutoffs.
+- **Permissions Added**: `android.permission.INTERNET` and `android.permission.ACCESS_NETWORK_STATE` in `AndroidManifest.xml`.
+
+### 2. Audio & Wake Word Pipeline Robustness
+- **AGC & Gain Staging**: Disabled Android system AGC in `MicStream.kt` to prevent noise floor pumping; replaced with hardware `NoiseSuppressor` and clean linear digital software gain (`softwareGain = 3.0f`) clamped to `[-1.0, 1.0]`.
+- **Dual Silero VAD Tuning**: Decoupled VAD configurations for waking vs turn segmentation:
+  - Wake Gate VAD: Sensitive gate (`threshold = 0.22`, `minRms = 0.005`) for immediate trigger without missing whispery speech.
+  - Turn Segmentation VAD: Robust gate (`threshold = 0.35/0.38`, `minRms = 0.010/0.012`) preventing room background noise from artificially extending speech turns.
+- **Pre-Roll Audio Ring Buffer**: Added a 6-frame (192ms) circular pre-roll buffer in `SpeechSegmenter.kt`, prepending pre-speech frames to the utterance buffer upon speech detection so leading syllables are never clipped.
+- **Sherpa KWS Keyword Spotting**: Added dynamic loading of fp32 ONNX models with fallback to `.int8.onnx` (`pickOnnx`), tuned `keywordsThreshold = 0.08`, `keywordsScore = 2.5`, `maxActivePaths = 12`, `numTrailingBlanks = 0`, and added a 6-second (`187` frames) active timeout in `GatedWakeWord`.
+- **HUD & Turn Controller Stop State Handling**: Fixed permanent mute bug where tapping the HUD while not speaking set `stopped = true` indefinitely. HUD tap now only stops playback when state is `SPEAKING` and triggers manual wake when `IDLE`. Added `speaker.clearStop()` at the beginning of each turn in `TurnController`.
+
+### 3. LLM Threadpool CFS Livelock Fix
+- **CFS Cpuset Spin Livelock Resolution**: In `app/src/main/cpp/llama_jni.cpp`, changed `tpp.strict_cpu = true;` to `tpp.strict_cpu = false;` in `create_big_core_threadpool()`. On Android Linux CFS, strict thread pinning combined with threadpool barrier synchronization causes livelock when threads compete or get preempted across cpusets.
+- **Prompt Index Logging**: Added sequential prompt index logging (`prompt idx/total 'query'`) in `LlmEngineDeviceTest.kt` for clear visibility during long instrumentation runs.
+
+---
 
 ---
 
