@@ -98,6 +98,9 @@ object FastIntents {
     private val webSearchRegex = Regex(
         "^(?:search wikipedia(?: for)?|search(?: online| the web)?(?: for)?|look up|google|find online|tell me about|who is|who was)\\s+(.+)$"
     )
+    private val questionSearchRegex = Regex(
+        "^(?:what(?:'s| is)? the (?:name|capital|meaning|population|height|age|author|founder|ceo|president|prime minister) of|who (?:is|was) the (?:sister|brother|father|mother|wife|husband|son|daughter|president|prime minister|ceo|author|inventor) of)\\s+(.+)$"
+    )
 
     fun isClosedCommand(text: String): Boolean {
         val call = match(text) ?: return false
@@ -210,6 +213,11 @@ object FastIntents {
         }
         webSearchRegex.matchEntire(norm)?.let { m ->
             return ToolCall("web_search", mapOf("query" to m.groupValues[1].trim()))
+        }
+        questionSearchRegex.matchEntire(norm)?.let { m ->
+            val rawQ = m.groupValues[1].trim()
+            val query = rawQ.replace(Regex("['’]s\\b"), "").replace(Regex("\\s+"), " ").trim()
+            return ToolCall("web_search", mapOf("query" to query))
         }
 
         return null

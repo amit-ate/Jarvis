@@ -144,6 +144,9 @@ class IntentAccuracyHarnessTest {
         TestCase("search online for quantum computing", "web_search", "query", "quantum computing"),
         TestCase("look up photosynthesis", "web_search", "query", "photosynthesis"),
         TestCase("search wikipedia for HTTP", "web_search", "query", "http"),
+        TestCase("what is the name of Rahul Gandhi's sister", "web_search", "query", "rahul gandhi sister"),
+        TestCase("who is the sister of Rahul Gandhi", "web_search", "query", "the sister of rahul gandhi"),
+        TestCase("what is the capital of France", "web_search", "query", "france"),
 
         // Notes
         TestCase("remember my keys are in the drawer", "remember", "note", "my keys are in the drawer"),

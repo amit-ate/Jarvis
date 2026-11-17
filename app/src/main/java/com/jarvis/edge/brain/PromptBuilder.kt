@@ -13,7 +13,7 @@ class PromptBuilder(
 ) {
     fun system(): String {
         val body = buildString {
-            append("You are Jarvis, a concise voice assistant. Reply with 'SAY: <short answer in 2 sentences or fewer>' or a JSON tool call.")
+            append("You are Jarvis, a concise voice assistant. Reply with 'SAY: <short answer>' or JSON tool call. Use web_search for unknown facts.")
             if (tools.isNotEmpty()) {
                 append("\nTools:\n")
                 for (tool in tools) {

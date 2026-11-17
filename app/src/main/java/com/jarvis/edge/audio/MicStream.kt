@@ -18,7 +18,7 @@ class MicUnavailableException(message: String, cause: Throwable? = null) :
 class MicStream(
     private val sampleRateHz: Int = SAMPLE_RATE,
     private val frameSize: Int = FRAME_SIZE,
-    private val softwareGain: Float = 3.0f,
+    private val softwareGain: Float = 2.0f,
 ) {
     private val suppressUntilMs = AtomicLong(0L)
 
@@ -54,12 +54,6 @@ class MicStream(
             throw MicUnavailableException("AudioRecord not initialized (state=${record.state})")
         }
 
-        val ns = runCatching {
-            if (NoiseSuppressor.isAvailable()) {
-                NoiseSuppressor.create(record.audioSessionId)?.apply { enabled = true }
-            } else null
-        }.getOrNull()
-
         try {
             record.startRecording()
             if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
@@ -86,7 +80,6 @@ class MicStream(
                 emit(floats)
             }
         } finally {
-            runCatching { ns?.release() }
             runCatching { record.stop() }
             record.release()
         }

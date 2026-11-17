@@ -159,6 +159,6 @@ class SpeechSegmenter(
         private const val SAMPLES_PER_SECOND = 16_000f
         private const val FRAME_SAMPLES = 512
         private const val FRAME_MS = 32f
-        private const val PRE_SPEECH_FRAMES = 6
+        private const val PRE_SPEECH_FRAMES = 16
     }
 }

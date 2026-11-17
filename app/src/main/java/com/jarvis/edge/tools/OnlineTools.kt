@@ -23,6 +23,24 @@ private fun httpGetText(urlStr: String, userAgent: String, timeoutMs: Int = 4500
     }
 }
 
+private fun httpPostText(urlStr: String, postData: String, userAgent: String, timeoutMs: Int = 4500): String? {
+    val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        doOutput = true
+        connectTimeout = timeoutMs
+        readTimeout = timeoutMs
+        setRequestProperty("User-Agent", userAgent)
+        setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+    }
+    return try {
+        conn.outputStream.use { it.write(postData.toByteArray(Charsets.UTF_8)) }
+        val code = conn.responseCode
+        if (code !in 200..299) null else conn.inputStream.bufferedReader().use { it.readText() }
+    } finally {
+        conn.disconnect()
+    }
+}
+
 class GetWeatherTool(
     private val fetcher: (String) -> String? = { url -> httpGetText(url, "curl/8.0") },
 ) : Tool {
@@ -58,6 +76,9 @@ class GetWeatherTool(
 
 class WebSearchTool(
     private val fetcher: (String) -> String? = { url -> httpGetText(url, "JarvisEdge/1.0") },
+    private val postFetcher: (String, String) -> String? = { url, data ->
+        httpPostText(url, data, "Mozilla/5.0 (Linux; Android 9; Redmi Note 5 Pro)")
+    },
 ) : Tool {
     override val name = "web_search"
     override val description = "Search web/Wikipedia"
@@ -83,6 +104,28 @@ class WebSearchTool(
         }.orEmpty()
         if (ddgAnswer.isNotEmpty()) {
             return@withContext ToolResult(summarizeForSpeech(ddgAnswer), ok = true)
+        }
+
+        // Try DuckDuckGo Lite snippet extraction for direct answers to questions
+        val ddgLiteRaw = runCatching {
+            postFetcher("https://lite.duckduckgo.com/lite/", "q=$encoded")
+        }.getOrNull()
+        val ddgLiteSnippet = ddgLiteRaw?.let { html ->
+            val match = Regex("<td class=[\"']result-snippet[\"']>(.*?)</td>", RegexOption.DOT_MATCHES_ALL).find(html)
+            match?.groupValues?.get(1)?.let { rawSnippet ->
+                rawSnippet.replace(Regex("<.*?>"), "")
+                    .replace("&#x27;", "'")
+                    .replace("&quot;", "\"")
+                    .replace("&amp;", "&")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace(Regex("\\[[0-9a-zA-Z]+\\]"), "")
+                    .replace(Regex("\\s+"), " ")
+                    .trim()
+            }
+        }.orEmpty()
+        if (ddgLiteSnippet.length > 20) {
+            return@withContext ToolResult(summarizeForSpeech(ddgLiteSnippet), ok = true)
         }
 
         val wikiSearchRaw = runCatching {

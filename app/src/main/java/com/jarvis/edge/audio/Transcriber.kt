@@ -24,6 +24,14 @@ interface LiveTranscriber {
     fun reset()
 }
 
+private fun pickOnnx(dir: File, base: String): File {
+    val fp32 = File(dir, "$base.onnx")
+    if (fp32.exists()) return fp32
+    val int8 = File(dir, "$base.int8.onnx")
+    if (int8.exists()) return int8
+    return fp32
+}
+
 class SherpaMoonshineTranscriber(
     modelDir: File,
     numThreads: Int = 4,
@@ -87,9 +95,9 @@ class SherpaLiveTranscriber(
 
     init {
         val transducer = OnlineTransducerModelConfig(
-            encoder = File(modelDir, "encoder-epoch-99-avg-1.int8.onnx").absolutePath,
-            decoder = File(modelDir, "decoder-epoch-99-avg-1.int8.onnx").absolutePath,
-            joiner = File(modelDir, "joiner-epoch-99-avg-1.int8.onnx").absolutePath,
+            encoder = pickOnnx(modelDir, "encoder-epoch-99-avg-1").absolutePath,
+            decoder = pickOnnx(modelDir, "decoder-epoch-99-avg-1").absolutePath,
+            joiner = pickOnnx(modelDir, "joiner-epoch-99-avg-1").absolutePath,
         )
         val modelConfig = OnlineModelConfig(
             transducer = transducer,
@@ -109,7 +117,8 @@ class SherpaLiveTranscriber(
             modelConfig = modelConfig,
             endpointConfig = endpointConfig,
             enableEndpoint = false,
-            decodingMethod = "greedy_search",
+            decodingMethod = "modified_beam_search",
+            maxActivePaths = 4,
         )
         recognizer = OnlineRecognizer(null, config)
         stream = recognizer.createStream("")

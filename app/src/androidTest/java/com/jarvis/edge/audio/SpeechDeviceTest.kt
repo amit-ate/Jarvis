@@ -43,6 +43,28 @@ class SpeechDeviceTest {
             val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
             // Playback + cache hit read completes cleanly on-device; verify cached synthesis didn't stall.
             assertTrue("Expected cache hit playback in <= 3000 ms, took $elapsedMs ms", elapsedMs <= 3000L)
+
+            // Test WAV transcription accuracy on test_wavs/0.wav
+            val wavFile = File(root, "asr-zipformer/test_wavs/0.wav")
+            if (wavFile.exists()) {
+                val waveData = com.k2fsa.sherpa.onnx.WaveReader.readWave(wavFile.absolutePath)
+                if (waveData != null) {
+                    val moonshineText = accurate.transcribe(waveData.samples)
+                    android.util.Log.i("AsrBench", "0.wav Moonshine: \"$moonshineText\"")
+
+                    live.reset()
+                    val chunkSize = 512
+                    var idx = 0
+                    while (idx < waveData.samples.size) {
+                        val end = minOf(idx + chunkSize, waveData.samples.size)
+                        val chunk = waveData.samples.copyOfRange(idx, end)
+                        live.accept(chunk)
+                        idx = end
+                    }
+                    val zipformerText = live.finish()
+                    android.util.Log.i("AsrBench", "0.wav Zipformer: \"$zipformerText\"")
+                }
+            }
         } finally {
             speaker.release()
             accurate.release()

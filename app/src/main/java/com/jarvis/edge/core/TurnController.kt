@@ -55,14 +55,15 @@ class TurnController(
             }
 
             val samples = capturedSamples ?: return
-            val finalLive = live.finish()
+            val finalLive = live.finish().trim()
 
             setState(AssistantState.THINKING)
 
             val transcript = if (FastIntents.isClosedCommand(finalLive) || accurate == null) {
                 finalLive
             } else {
-                accurate.transcribe(samples)
+                val accurateText = accurate.transcribe(samples).trim()
+                selectBestTranscript(finalLive, accurateText)
             }.trim()
 
             onTranscript(transcript)
@@ -94,6 +95,33 @@ class TurnController(
         } finally {
             setState(AssistantState.IDLE)
         }
+    }
+
+    private fun selectBestTranscript(live: String, accurate: String): String {
+        val l = live.trim()
+        val a = accurate.trim()
+        if (a.isBlank()) return l
+        if (l.isBlank()) return a
+        if (l.equals(a, ignoreCase = true)) return a
+
+        // FastIntents match check: if one matches a known voice intent and the other doesn't,
+        // prefer the one that matches.
+        val lMatch = FastIntents.match(l)
+        val aMatch = FastIntents.match(a)
+        if (lMatch != null && aMatch == null) return l
+        if (aMatch != null && lMatch == null) return a
+
+        // If live was an immediate closed command (e.g. torch, volume), prefer live for latency
+        if (FastIntents.isClosedCommand(l)) return l
+
+        // Check for hallucination / garbage indicators (e.g. dangling trailing quotes, excessive repetition)
+        val aHasGarbage = a.endsWith("'") || a.endsWith("\"") || (l.split(" ").size >= 4 && a.split(" ").size <= l.split(" ").size / 2)
+        val lHasGarbage = l.endsWith("'") || l.endsWith("\"") || (a.split(" ").size >= 4 && l.split(" ").size <= a.split(" ").size / 2)
+        if (aHasGarbage && !lHasGarbage) return l
+        if (lHasGarbage && !aHasGarbage) return a
+
+        // Default to accurate (offline bidirectional model)
+        return a
     }
 
     private class TurnDoneSignal : CancellationException("Turn segmentation finished")
