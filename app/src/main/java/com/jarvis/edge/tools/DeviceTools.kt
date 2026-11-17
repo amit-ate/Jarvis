@@ -58,10 +58,16 @@ class SetVolumeTool(private val context: Context) : Tool {
     override val params = mapOf("percent" to null)
 
     override suspend fun run(args: Map<String, String>): ToolResult {
-        val pct = args["percent"]?.toIntOrNull()?.coerceIn(0, 100)
-            ?: return ToolResult("Tell me a volume percentage between 0 and 100.", ok = false)
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val current = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val currentPct = if (max > 0) ((current.toDouble() / max) * 100).roundToInt() else 50
+        val rawPct = args["percent"]?.trim()?.lowercase()
+        val pct = when (rawPct) {
+            "up" -> (currentPct + 15).coerceIn(0, 100)
+            "down" -> (currentPct - 15).coerceIn(0, 100)
+            else -> rawPct?.toIntOrNull()?.coerceIn(0, 100)
+        } ?: return ToolResult("Tell me a volume percentage between 0 and 100.", ok = false)
         val target = ((pct / 100.0) * max).roundToInt().coerceIn(0, max)
         am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
         return ToolResult("Volume set to $pct percent.", ok = true)
@@ -77,8 +83,12 @@ class SetBrightnessTool(
     override val params = mapOf("percent" to null)
 
     override suspend fun run(args: Map<String, String>): ToolResult {
-        val pct = args["percent"]?.toIntOrNull()?.coerceIn(0, 100)
-            ?: return ToolResult("Tell me a brightness percentage between 0 and 100.", ok = false)
+        val rawPct = args["percent"]?.trim()?.lowercase()
+        val pct = when (rawPct) {
+            "up" -> 85
+            "down" -> 25
+            else -> rawPct?.toIntOrNull()?.coerceIn(0, 100)
+        } ?: return ToolResult("Tell me a brightness percentage between 0 and 100.", ok = false)
 
         onWindowBrightness?.invoke((pct / 100f).coerceIn(0.02f, 1.0f))
         if (Settings.System.canWrite(context)) {

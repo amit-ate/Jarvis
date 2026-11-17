@@ -17,8 +17,8 @@
 | **Phase 1** | Task 4: App Skeleton, State Machine & Service | **Device Verified** | Installed on `<serial>`; `JarvisService` `isForeground=true` 8s after `HudActivity` launch; process alive; `0` crashes. Fixed HUD tap handling (stops TTS only when `SPEAKING`, manual wake when `IDLE`). |
 | **Phase 1** | Task 5: Microphone, Wake Word & Utterance Capture | **Device Verified** | Audio pipeline overhaul: disabled Android AGC in `MicStream` to eliminate noise floor pumping, clean `softwareGain = 3.0f` + hardware `NoiseSuppressor`. Split Silero VAD into dual instances: wake gate (`threshold = 0.22, minRms = 0.005`) vs turn segmentation (`threshold = 0.35/0.38, minRms = 0.010/0.012`). Added 6-frame (192ms) pre-roll buffer in `SpeechSegmenter`. `SherpaWakeWord` dynamically loads fp32 ONNX, `keywordsThreshold = 0.08`, `keywordsScore = 2.5`, `maxActiveFrames = 187` (6s timeout). `SpeechDeviceTest` passed in `14.54s`. |
 | **Phase 1** | Task 6: Transcription & Speech Output | **Device Verified** | Covered by `SpeechDeviceTest` above. Added `speaker.clearStop()` in `TurnController` to prevent stale stop states from muting turns. |
-| **Phase 2** | Task 7: Tool Types, Fast Intents & Core Tools | **Host & Device Verified** | 17 tools registered. Added `GetWeatherTool` (`get_weather`) querying `wttr.in` with TTS unit conversions, and `WebSearchTool` (`web_search`) with DDG Instant Answer + Wikipedia fallback. FastIntents routing: `weatherHereRegex`, `weatherInCityRegex`, `webSearchRegex`, and `isClosedCommand`. Permissions: `INTERNET`, `ACCESS_NETWORK_STATE`. |
-| **Phase 2** | Task 8: Language Model Engine (`llama_jni.cpp`) | **Device Verified** | `LlmEngineDeviceTest` `OK (3 tests)` in `245.752s` (all 20 prompts verified under GBNF grammar). Threadpool fix: changed `tpp.strict_cpu = false;` in `create_big_core_threadpool()`, eliminating CFS cpuset spin livelock. Added prompt index logging. |
+| **Phase 2** | Task 7: Tool Types, Fast Intents & Core Tools | **Host & Device Verified** | 17 tools registered. Added `GetWeatherTool` (`get_weather`) and `WebSearchTool` (`web_search`). Expanded `FastIntents` with relative volume (`volume up/down`), relative brightness (`brighter/dimmer`), notes (`remember that...`), and conversational torch variants (`turn the light on`, `torch on`). Added `IntentAccuracyHarnessTest` (67 test cases, 100% precision, 3.15 µs/query). |
+| **Phase 2** | Task 8: Language Model Engine (`llama_jni.cpp`) | **Device Verified** | `LlmEngineDeviceTest` `OK (3 tests)`. SIMD and assembly optimizations: enabled Cortex-A73 compiler tuning flags (`-mcpu=cortex-a73 -mtune=cortex-a73 -fvectorize`); optimized ARMv8.0-A dot-product kernel (`ggml_vdotq_s32`) using `vpadalq_s16` (`sadalp` assembly); implemented GBNF grammar sampler caching (`llama_sampler_clone`) eliminating 200ms grammar compilation per turn. Added native NEON SIMD audio processing (`SimdAudio`, `simd_audio.cpp`). |
 | **Phase 2** | Task 9: Brain & Full Voice Turn | **Device Verified (partial)** | Missing-model degraded mode verified. Live Brain logging added (`JarvisBrain`, `JarvisTurn`). 20-command live voice acceptance needs a human speaker. |
 | **Phase 2** | Task 10: Infrared Control (`consumerir`) | **Device Verified (partial)** | IR transmit step of `VisionAndIrDeviceTest` passes; physical TV test needs a human |
 | **Phase 3** | Task 11: Camera, OCR & SmolVLM Scene Description | **Device Verified** | `VisionAndIrDeviceTest` `OK (2 tests)` in `29.668s` (rear + front camera snapshots, OCR, IR blaster, SmolVLM describe). Live voice verification confirmed: "What do you see?" -> rear camera scene description; "What am I holding?" -> front camera scene description; "Read this" -> OCR text recognition. `SmolVLM-256M-Instruct-Q8_0` with `image_min/max_tokens = 64`, `maxEdge = 384`, big-core affinity pinning (`cores 4–7`) during `describe`. |
@@ -30,10 +30,11 @@
 ## Host Build & JVM Unit Test Results
 
 - **Builds (`./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest`):**
-  - `libllama_jni.so` (`arm64-v8a`): `77M` (unstripped intermediate; compiled with `-march=armv8-a -O3 -DNDEBUG`, linking `llama`, `ggml`, `mtmd`)
-  - `app/build/outputs/apk/debug/app-debug.apk`: `77M`
-  - `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`: `930K`
-- **JVM Tests Total:** `51` tests run, `0` failures, `0` skipped:
+  - `libllama_jni.so` (`arm64-v8a`): compiled with `-march=armv8-a -mtune=cortex-a73 -O3 -DNDEBUG -fvectorize`, linking `llama`, `ggml`, `mtmd`, and `simd_audio`
+  - `app/build/outputs/apk/debug/app-debug.apk`: built and verified
+  - `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`: built and verified
+- **JVM Tests Total:** `52` tests run, `0` failures, `0` skipped:
+  - `IntentAccuracyHarnessTest`: `1/1` passed (67 test cases, 100% precision, 3.15 µs/query)
   - `SpeechSegmenterTest`: `6/6` passed
   - `BrainTest`: `5/5` passed
   - `FastIntentsTest`: `1/1` passed (includes weather & web search routing)

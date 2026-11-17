@@ -81,9 +81,8 @@ class MicStream(
                 if (System.currentTimeMillis() < suppressUntilMs.get()) {
                     continue
                 }
-                val floats = FloatArray(frameSize) { i ->
-                    ((pcm[i] / 32768.0f) * softwareGain).coerceIn(-1.0f, 1.0f)
-                }
+                val floats = FloatArray(frameSize)
+                SimdAudio.processPcm(pcm, 0, frameSize, floats, softwareGain)
                 emit(floats)
             }
         } finally {

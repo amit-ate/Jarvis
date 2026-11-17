@@ -75,6 +75,8 @@ struct LlmSession {
   ggml_threadpool_t threadpool = nullptr;
   std::vector<llama_token> prev_tokens;
   std::mutex mu;
+  llama_sampler *cached_grammar = nullptr;
+  std::string cached_grammar_str;
 };
 
 int64_t now_us() {
@@ -363,8 +365,20 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
   llama_sampler *smpl =
       llama_sampler_chain_init(llama_sampler_chain_default_params());
   if (!grammar_str.empty()) {
-    llama_sampler *gram =
-        llama_sampler_init_grammar(vocab, grammar_str.c_str(), "root");
+    llama_sampler *gram = nullptr;
+    if (session->cached_grammar && session->cached_grammar_str == grammar_str) {
+      gram = llama_sampler_clone(session->cached_grammar);
+    }
+    if (!gram) {
+      gram = llama_sampler_init_grammar(vocab, grammar_str.c_str(), "root");
+      if (gram) {
+        if (session->cached_grammar) {
+          llama_sampler_free(session->cached_grammar);
+        }
+        session->cached_grammar = llama_sampler_clone(gram);
+        session->cached_grammar_str = grammar_str;
+      }
+    }
     if (gram) {
       llama_sampler_chain_add(smpl, gram);
     } else {
@@ -457,6 +471,10 @@ JNIEXPORT void JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeUnload(
     return;
   {
     std::lock_guard<std::mutex> lock(session->mu);
+    if (session->cached_grammar) {
+      llama_sampler_free(session->cached_grammar);
+      session->cached_grammar = nullptr;
+    }
     if (session->ctx) {
       llama_detach_threadpool(session->ctx);
       llama_free(session->ctx);

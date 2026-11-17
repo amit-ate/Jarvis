@@ -31,16 +31,28 @@ object FastIntents {
         "^(?:cancel|stop|clear|delete)\\s+(?:all\\s+)?(?:my\\s+)?timers?$"
     )
     private val torchRegex = Regex(
-        "^(?:turn|switch)?\\s*(on|off)\\s+(?:the\\s+)?(?:flashlight|torch|flash)|^(?:flashlight|torch)\\s+(on|off)$"
+        "^(?:(?:turn|switch)\\s+)?(?:the\\s+)?(?:flashlight|torch|flash|light)\\s+(on|off)$" +
+        "|^(?:(?:turn|switch)\\s+)?(on|off)\\s+(?:the\\s+)?(?:flashlight|torch|flash|light)$"
     )
     private val volumeRegex = Regex(
         "^(?:set\\s+)?(?:the\\s+)?(?:media\\s+)?volume\\s+(?:to\\s+)?(\\d{1,3})\\s*(?:percent|%)?$"
     )
+    private val volumeRelativeRegex = Regex(
+        "^((?:turn|bring|crank)\\s+up\\s+(?:the\\s+)?volume|volume\\s+up|louder|increase\\s+(?:the\\s+)?volume)$" +
+        "|^((?:turn|bring)\\s+down\\s+(?:the\\s+)?volume|volume\\s+down|softer|quieter|decrease\\s+(?:the\\s+)?volume)$"
+    )
     private val brightnessRegex = Regex(
         "^(?:set\\s+)?(?:the\\s+)?(?:screen\\s+)?brightness\\s+(?:to\\s+)?(\\d{1,3})\\s*(?:percent|%)?$"
     )
+    private val brightnessRelativeRegex = Regex(
+        "^((?:make\\s+it\\s+|screen\\s+)?brighter|increase\\s+(?:the\\s+)?(?:screen\\s+)?brightness)$" +
+        "|^((?:dim\\s+(?:the\\s+)?screen|(?:make\\s+it\\s+|screen\\s+)?dimmer|decrease\\s+(?:the\\s+)?(?:screen\\s+)?brightness))$"
+    )
     private val batteryRegex = Regex(
-        "^(?:what(?:'s| is)? (?:the |your )?battery(?: level| status| percentage| temp| temperature)?|battery(?: level| status)?|how much battery(?: is left)?)$"
+        "^(?:(?:what(?:'s| is)?|check|how(?:'s| is))\\s+(?:the |your )?battery(?: level| status| percentage| percent| temp| temperature)?|battery(?: level| status| percentage| percent)?|how much battery(?: is left)?)$"
+    )
+    private val rememberRegex = Regex(
+        "^(?:remember(?: that)?|save (?:a )?note(?: that)?|take a note(?: that)?)\\s+(.+)$"
     )
     private val lightRegex = Regex(
         "^(?:what(?:'s| is)? the (?:ambient )?light level|how bright is it(?: in here)?|light level|ambient light)$"
@@ -77,7 +89,7 @@ object FastIntents {
         "^(?:what(?:'s| is)? the weather(?: like)? in|how(?:'s| is) the weather in|weather in|temperature in)\\s+([a-z][a-z\\s]{1,30}?)(?:\\s+(?:today|now|right now))?$"
     )
     private val webSearchRegex = Regex(
-        "^(?:search(?: online| the web)?(?: for)?|look up|google|find online|search wikipedia(?: for)?|tell me about|who is)\\s+(.+)$"
+        "^(?:search wikipedia(?: for)?|search(?: online| the web)?(?: for)?|look up|google|find online|tell me about|who is|who was)\\s+(.+)$"
     )
 
     fun isClosedCommand(text: String): Boolean {
@@ -142,10 +154,22 @@ object FastIntents {
             val pct = m.groupValues[1].toIntOrNull()?.coerceIn(0, 100) ?: return null
             return ToolCall("set_volume", mapOf("percent" to pct.toString()))
         }
+        volumeRelativeRegex.matchEntire(norm)?.let { m ->
+            val dir = if (m.groupValues[1].isNotEmpty()) "up" else "down"
+            return ToolCall("set_volume", mapOf("percent" to dir))
+        }
 
         brightnessRegex.matchEntire(norm)?.let { m ->
             val pct = m.groupValues[1].toIntOrNull()?.coerceIn(0, 100) ?: return null
             return ToolCall("set_brightness", mapOf("percent" to pct.toString()))
+        }
+        brightnessRelativeRegex.matchEntire(norm)?.let { m ->
+            val dir = if (m.groupValues[1].isNotEmpty()) "up" else "down"
+            return ToolCall("set_brightness", mapOf("percent" to dir))
+        }
+
+        rememberRegex.matchEntire(norm)?.let { m ->
+            return ToolCall("remember", mapOf("note" to m.groupValues[1].trim()))
         }
 
         if (batteryRegex.matches(norm)) return ToolCall("battery_status", emptyMap())
