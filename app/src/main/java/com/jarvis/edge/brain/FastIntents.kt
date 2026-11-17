@@ -24,38 +24,45 @@ object FastIntents {
     private val timerSingleUnitRegex = Regex(
         "^(?:set (?:a )?timer(?: for)?|timer(?: for)?|countdown(?: for)?)\\s+(\\d+)\\s*(hour|hours|hr|hrs|min|mins|minute|minutes|sec|secs|second|seconds)$"
     )
+    private val timerInvertedRegex = Regex(
+        "^(?:set (?:a )?)?(\\d+)\\s*(hour|hours|hr|hrs|min|mins|minute|minutes|sec|secs|second|seconds)\\s+timer$"
+    )
     private val alarmRegex = Regex(
-        "^(?:set (?:an )?alarm(?: for)?|wake me(?: up)? at)\\s+(\\d{1,2})(?:[:\\s](\\d{2}))?\\s*(am|pm)?$"
+        "^(?:(?:set (?:an )?)?alarm(?: for| at)?|wake me(?: up)? at)\\s+(\\d{1,2})(?:[:\\s](\\d{2}))?\\s*(am|pm)?$"
     )
     private val cancelTimersRegex = Regex(
         "^(?:cancel|stop|clear|delete)\\s+(?:all\\s+)?(?:my\\s+)?timers?$"
     )
     private val torchRegex = Regex(
-        "^(?:(?:turn|switch)\\s+)?(?:the\\s+)?(?:flashlight|torch|flash|light)\\s+(on|off)$" +
-        "|^(?:(?:turn|switch)\\s+)?(on|off)\\s+(?:the\\s+)?(?:flashlight|torch|flash|light)$"
+        "^(?:(?:turn|switch)\\s+)?(?:the\\s+)?(?:flashlight|torch|flash|lights?)\\s+(on|off)$" +
+        "|^(?:(?:turn|switch)\\s+)?(on|off)\\s+(?:the\\s+)?(?:flashlight|torch|flash|lights?)$" +
+        "|^(?:flashlight|torch|lights?)$"
     )
     private val volumeRegex = Regex(
         "^(?:set\\s+)?(?:the\\s+)?(?:media\\s+)?volume\\s+(?:to\\s+)?(\\d{1,3})\\s*(?:percent|%)?$"
     )
     private val volumeRelativeRegex = Regex(
-        "^((?:turn|bring|crank)\\s+up\\s+(?:the\\s+)?volume|volume\\s+up|louder|increase\\s+(?:the\\s+)?volume)$" +
-        "|^((?:turn|bring)\\s+down\\s+(?:the\\s+)?volume|volume\\s+down|softer|quieter|decrease\\s+(?:the\\s+)?volume)$"
+        "^((?:(?:turn|bring|crank)\\s+up\\s+(?:the\\s+)?volume|(?:turn|bring|crank)\\s+(?:the\\s+)?volume\\s+up|volume\\s+up|(?:make\\s+it\\s+)?louder|increase\\s+(?:the\\s+)?volume))$" +
+        "|^((?:(?:turn|bring)\\s+down\\s+(?:the\\s+)?volume|(?:turn|bring)\\s+(?:the\\s+)?volume\\s+down|volume\\s+down|(?:make\\s+it\\s+)?(?:quieter|softer)|decrease\\s+(?:the\\s+)?volume))$"
     )
     private val brightnessRegex = Regex(
         "^(?:set\\s+)?(?:the\\s+)?(?:screen\\s+)?brightness\\s+(?:to\\s+)?(\\d{1,3})\\s*(?:percent|%)?$"
     )
     private val brightnessRelativeRegex = Regex(
-        "^((?:make\\s+it\\s+|screen\\s+)?brighter|increase\\s+(?:the\\s+)?(?:screen\\s+)?brightness)$" +
-        "|^((?:dim\\s+(?:the\\s+)?screen|(?:make\\s+it\\s+|screen\\s+)?dimmer|decrease\\s+(?:the\\s+)?(?:screen\\s+)?brightness))$"
+        "^((?:make\\s+it\\s+|screen\\s+)?brighter|(?:increase|(?:turn|bring)\\s+up)\\s+(?:the\\s+)?(?:screen\\s+)?brightness|(?:turn|bring)\\s+(?:the\\s+)?(?:screen\\s+)?brightness\\s+up)$" +
+        "|^((?:dim\\s+(?:the\\s+)?screen|(?:make\\s+it\\s+|screen\\s+)?dimmer|(?:decrease|(?:turn|bring)\\s+down)\\s+(?:the\\s+)?(?:screen\\s+)?brightness|(?:turn|bring)\\s+(?:the\\s+)?(?:screen\\s+)?brightness\\s+down))$"
     )
     private val batteryRegex = Regex(
-        "^(?:(?:what(?:'s| is)?|check|how(?:'s| is))\\s+(?:the |your )?battery(?: level| status| percentage| percent| temp| temperature)?|battery(?: level| status| percentage| percent)?|how much battery(?: is left)?)$"
+        "^(?:(?:what(?:'s| is)?|check|how(?:'s| is))\\s+(?:the |your )?battery(?: level| status| percentage| percent| temp| temperature)?|battery(?: level| status| percentage| percent)?|how much battery(?: (?:is |do i have )?left)?)$"
     )
     private val rememberRegex = Regex(
-        "^(?:remember(?: that)?|save (?:a )?note(?: that)?|take a note(?: that)?)\\s+(.+)$"
+        "^(?:remember(?: that)?|save (?:a )?note(?: that)?|take a note(?: that)?|note(?: that)?)\\s+(.+)$"
+    )
+    private val recallRegex = Regex(
+        "^(?:recall(?: (?:my |the )?notes?(?: about| for)?)?|search (?:my |the )?notes?(?: for)?|find (?:my |the )?notes?(?: about| for)?|what did i (?:say|write|note|save) about|what do you remember about)\\s+(.+)$"
     )
     private val lightRegex = Regex(
-        "^(?:what(?:'s| is)? the (?:ambient )?light level|how bright is it(?: in here)?|light level|ambient light)$"
+        "^(?:what(?:'s| is)? (?:the )?(?:ambient )?light(?: level)?|how bright is it(?: in here)?|light level|ambient light)$"
     )
     private val tvPowerRegex = Regex(
         "^(?:turn|switch)\\s+(?:on|off)\\s+(?:the\\s+)?tv$|^tv\\s+(?:power|on|off)$"
@@ -74,13 +81,13 @@ object FastIntents {
         "^(?:turn|switch)\\s+(?:on|off)\\s+(?:the\\s+)?(?:ac|air conditioner)$|^(?:ac|air conditioner)\\s+(?:power|on|off)$"
     )
     private val readThisRegex = Regex(
-        "^(?:read\\s+this|read\\s+(?:the\\s+)?text|read\\s+what(?:'s|\\s+is)\\s+(?:in\\s+front|written)(?:\\s+of\\s+you)?)$"
+        "^(?:read\\s+this(?:\\s+text)?|read\\s+(?:the\\s+)?text|read\\s+what(?:'s|\\s+is)\\s+(?:in\\s+front|written)(?:\\s+of\\s+you)?)$"
     )
     private val lookFrontHoldingRegex = Regex(
-        "^(?:what\\s+am\\s+i\\s+holding)$"
+        "^(?:what\\s+am\\s+i\\s+holding(?:\\s+(?:in\\s+my\\s+hand|now|right\\s+now))?)$"
     )
     private val lookFrontSeeRegex = Regex(
-        "^(?:what\\s+do\\s+you\\s+see(?:\\s+in\\s+front)?|look\\s+at\\s+(?:this|me))$"
+        "^(?:(?:describe\\s+)?what\\s+(?:do\\s+)?you\\s+see(?:\\s+(?:in\\s+front|around|now|right\\s+now))?|look\\s+at\\s+(?:this|me)|what(?:'s|\\s+is)\\s+in\\s+front(?:\\s+of\\s+me)?)$"
     )
     private val weatherHereRegex = Regex(
         "^(?:what(?:'s| is)? the weather(?: like)?(?: today| now| outside| right now)?|how(?:'s| is) the weather(?: outside| today)?|weather(?: today| outside| now| report| forecast)?|what(?:'s| is)? the temperature(?: outside| now)?)$"
@@ -112,7 +119,8 @@ object FastIntents {
                 mapOf("minutes" to m.groupValues[1], "seconds" to m.groupValues[2]),
             )
         }
-        timerSingleUnitRegex.matchEntire(norm)?.let { m ->
+        val timerMatch = timerSingleUnitRegex.matchEntire(norm) ?: timerInvertedRegex.matchEntire(norm)
+        timerMatch?.let { m ->
             val value = m.groupValues[1].toIntOrNull() ?: return null
             val unit = m.groupValues[2]
             return when {
@@ -144,7 +152,7 @@ object FastIntents {
         if (cancelTimersRegex.matches(norm)) return ToolCall("cancel_timers", emptyMap())
 
         torchRegex.matchEntire(norm)?.let { m ->
-            val state = m.groupValues[1].ifEmpty { m.groupValues[2] }
+            val state = (m.groupValues[1].ifEmpty { m.groupValues[2] }).ifEmpty { "on" }
             if (state == "on" || state == "off") {
                 return ToolCall("torch", mapOf("state" to state))
             }
@@ -169,7 +177,12 @@ object FastIntents {
         }
 
         rememberRegex.matchEntire(norm)?.let { m ->
-            return ToolCall("remember", mapOf("note" to m.groupValues[1].trim()))
+            val note = m.groupValues[1].trim()
+            return ToolCall("remember", mapOf("note" to note, "text" to note))
+        }
+        recallRegex.matchEntire(norm)?.let { m ->
+            val q = m.groupValues[1].trim()
+            return ToolCall("recall", mapOf("query" to q))
         }
 
         if (batteryRegex.matches(norm)) return ToolCall("battery_status", emptyMap())
@@ -203,15 +216,27 @@ object FastIntents {
     }
 
     internal fun normalize(raw: String): String {
-        val cleaned = raw.lowercase()
+        var cleaned = raw.lowercase()
             .replace(Regex("[^a-z0-9:%\\s']"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
-            .removePrefix("hey jarvis ")
-            .removePrefix("jarvis ")
-            .removePrefix("please ")
-            .removeSuffix(" please")
-            .trim()
+
+        var prev = ""
+        while (cleaned != prev) {
+            prev = cleaned
+            cleaned = cleaned
+                .removePrefix("hey jarvis ")
+                .removePrefix("ok jarvis ")
+                .removePrefix("okay jarvis ")
+                .removePrefix("jarvis ")
+                .removePrefix("please ")
+                .removePrefix("could you please ")
+                .removePrefix("can you please ")
+                .removePrefix("could you ")
+                .removePrefix("can you ")
+                .removeSuffix(" please")
+                .trim()
+        }
 
         if (cleaned.isEmpty()) return ""
         val tokens = cleaned.split(" ")

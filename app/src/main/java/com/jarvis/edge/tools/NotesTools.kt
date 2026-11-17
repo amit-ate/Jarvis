@@ -65,7 +65,7 @@ class RememberTool(private val store: NotesStore) : Tool {
     override val params = mapOf("text" to null)
 
     override suspend fun run(args: Map<String, String>): ToolResult {
-        val text = args["text"]?.trim().orEmpty()
+        val text = (args["text"] ?: args["note"])?.trim().orEmpty()
         if (text.isEmpty()) {
             return ToolResult("What should I remember?", ok = false)
         }

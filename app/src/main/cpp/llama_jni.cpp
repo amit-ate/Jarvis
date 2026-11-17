@@ -267,8 +267,8 @@ JNIEXPORT jlong JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLoad(
   cparams.n_ctx = static_cast<uint32_t>(std::max<jint>(256, contextTokens));
   cparams.n_batch = 512;
   cparams.n_ubatch = 512;
-  cparams.n_threads = 4;
-  cparams.n_threads_batch = 4;
+  cparams.n_threads = 3;
+  cparams.n_threads_batch = 3;
   cparams.no_perf = true;
 
   llama_context *ctx = llama_init_from_model(model, cparams);
@@ -279,7 +279,7 @@ JNIEXPORT jlong JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLoad(
     return 0;
   }
 
-  ggml_threadpool_t tp = create_big_core_threadpool(4);
+  ggml_threadpool_t tp = create_big_core_threadpool(3);
   if (tp) {
     llama_attach_threadpool(ctx, tp, tp);
   }
@@ -353,6 +353,7 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
 
   const int64_t t_start_us = now_us();
 
+  const int64_t t_prefill_start_us = now_us();
   if (!eval_token_range(session->ctx, prompt_tokens, common, 512)) {
     __android_log_print(ANDROID_LOG_ERROR, kLogTag,
                         "Failed to evaluate prompt tokens");
@@ -360,11 +361,14 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
     session->prev_tokens.clear();
     return env->NewLongArray(5);
   }
+  const int64_t t_prefill_us = now_us() - t_prefill_start_us;
   session->prev_tokens = prompt_tokens;
 
+  int64_t t_grammar_clone_us = 0;
   llama_sampler *smpl =
       llama_sampler_chain_init(llama_sampler_chain_default_params());
   if (!grammar_str.empty()) {
+    const int64_t t_g_start = now_us();
     llama_sampler *gram = nullptr;
     if (session->cached_grammar && session->cached_grammar_str == grammar_str) {
       gram = llama_sampler_clone(session->cached_grammar);
@@ -379,6 +383,7 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
         session->cached_grammar_str = grammar_str;
       }
     }
+    t_grammar_clone_us = now_us() - t_g_start;
     if (gram) {
       llama_sampler_chain_add(smpl, gram);
     } else {
@@ -398,6 +403,8 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
   int32_t out_count = 0;
   int64_t first_token_ms = -1;
   int64_t gen_start_us = 0;
+  int64_t t_first_sample_us = 0;
+  int64_t t_decode_us = 0;
   std::string pending_utf8;
 
   llama_batch one = llama_batch_init(1, 0, 1);
@@ -408,9 +415,11 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
                  static_cast<int32_t>(session->prev_tokens.size()) - 1));
 
   for (int32_t step = 0; step < limit; ++step) {
+    const int64_t t_sample_start = now_us();
     const llama_token id = llama_sampler_sample(smpl, session->ctx, -1);
     const int64_t now = now_us();
-    if (first_token_ms < 0) {
+    if (step == 0) {
+      t_first_sample_us = now - t_sample_start;
       first_token_ms = (now - t_start_us) / 1000;
       gen_start_us = now;
     }
@@ -436,7 +445,12 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
     one.n_seq_id[0] = 1;
     one.seq_id[0][0] = 0;
     one.logits[0] = 1;
-    if (llama_decode(session->ctx, one) != 0) {
+
+    const int64_t t_dec_start = now_us();
+    const int decode_rc = llama_decode(session->ctx, one);
+    t_decode_us += (now_us() - t_dec_start);
+
+    if (decode_rc != 0) {
       __android_log_print(ANDROID_LOG_ERROR, kLogTag,
                           "Failed to decode token step %d", step);
       break;
@@ -454,6 +468,18 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
   if (first_token_ms < 0) {
     first_token_ms = (now_us() - t_start_us) / 1000;
   }
+
+  __android_log_print(
+      ANDROID_LOG_INFO, "LlamaBench",
+      "timing: t_prefill=%lld us (%.2f ms), t_grammar_clone=%lld us (%.2f ms), "
+      "t_first_sample=%lld us (%.2f ms), t_decode=%lld us (%.2f ms), "
+      "first_token_ms=%lld ms (prompt=%zu, cached=%zu, generated=%d)",
+      static_cast<long long>(t_prefill_us), t_prefill_us / 1000.0,
+      static_cast<long long>(t_grammar_clone_us), t_grammar_clone_us / 1000.0,
+      static_cast<long long>(t_first_sample_us), t_first_sample_us / 1000.0,
+      static_cast<long long>(t_decode_us), t_decode_us / 1000.0,
+      static_cast<long long>(first_token_ms),
+      prompt_tokens.size(), common, out_count);
 
   jlong stats[5] = {static_cast<jlong>(prompt_tokens.size()),
                     static_cast<jlong>(common), static_cast<jlong>(out_count),

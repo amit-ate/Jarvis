@@ -24,8 +24,76 @@ class FastIntentsTest {
             FastIntents.match("turn on the flashlight"),
         )
         assertEquals(
+            ToolCall("torch", mapOf("state" to "off")),
+            FastIntents.match("torch off"),
+        )
+        assertEquals(
+            ToolCall("torch", mapOf("state" to "on")),
+            FastIntents.match("light please"),
+        )
+        assertEquals(
             ToolCall("set_volume", mapOf("percent" to "40")),
             FastIntents.match("volume to 40 percent"),
+        )
+        assertEquals(
+            ToolCall("set_volume", mapOf("percent" to "up")),
+            FastIntents.match("volume up"),
+        )
+        assertEquals(
+            ToolCall("set_volume", mapOf("percent" to "up")),
+            FastIntents.match("louder"),
+        )
+        assertEquals(
+            ToolCall("set_brightness", mapOf("percent" to "down")),
+            FastIntents.match("dim screen"),
+        )
+        assertEquals(
+            ToolCall("set_brightness", mapOf("percent" to "up")),
+            FastIntents.match("brighter"),
+        )
+        assertEquals(
+            ToolCall("cancel_timers", emptyMap()),
+            FastIntents.match("cancel timers"),
+        )
+        assertEquals(
+            ToolCall("set_alarm", mapOf("hour" to "7", "minute" to "0")),
+            FastIntents.match("wake me up at 7 am"),
+        )
+        assertEquals(
+            ToolCall("battery_status", emptyMap()),
+            FastIntents.match("battery"),
+        )
+        assertEquals(
+            ToolCall("battery_status", emptyMap()),
+            FastIntents.match("how much battery left"),
+        )
+        assertEquals(
+            ToolCall("light_level", emptyMap()),
+            FastIntents.match("ambient light"),
+        )
+        assertEquals(
+            ToolCall("remember", mapOf("note" to "my keys are in the drawer", "text" to "my keys are in the drawer")),
+            FastIntents.match("remember my keys are in the drawer"),
+        )
+        assertEquals(
+            ToolCall("recall", mapOf("query" to "keys")),
+            FastIntents.match("recall keys"),
+        )
+        assertEquals(
+            ToolCall("recall", mapOf("query" to "keys")),
+            FastIntents.match("what did I say about keys"),
+        )
+        assertEquals(
+            ToolCall("read_text", mapOf("camera" to "back")),
+            FastIntents.match("read this"),
+        )
+        assertEquals(
+            ToolCall("look", mapOf("camera" to "back", "question" to "what do you see")),
+            FastIntents.match("what do you see"),
+        )
+        assertEquals(
+            ToolCall("look", mapOf("camera" to "front", "question" to "what am i holding")),
+            FastIntents.match("what am I holding"),
         )
         assertEquals(
             ToolCall("get_weather", mapOf("location" to "")),

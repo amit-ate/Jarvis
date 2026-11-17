@@ -17,21 +17,34 @@ class IntentAccuracyHarnessTest {
     )
 
     private val testSuite = listOf(
-        // Torch
+        // Torch & Flashlight
         TestCase("turn on the flashlight", "torch", "state", "on"),
         TestCase("turn off the flashlight", "torch", "state", "off"),
+        TestCase("turn on flashlight", "torch", "state", "on"),
+        TestCase("turn off flashlight", "torch", "state", "off"),
         TestCase("turn the flashlight on", "torch", "state", "on"),
-        TestCase("turn the torch off", "torch", "state", "off"),
-        TestCase("turn on the torch", "torch", "state", "on"),
-        TestCase("turn off the torch", "torch", "state", "off"),
-        TestCase("turn the light on", "torch", "state", "on"),
-        TestCase("turn off the light", "torch", "state", "off"),
-        TestCase("torch on", "torch", "state", "on"),
-        TestCase("torch off", "torch", "state", "off"),
+        TestCase("turn the flashlight off", "torch", "state", "off"),
         TestCase("flashlight on", "torch", "state", "on"),
         TestCase("flashlight off", "torch", "state", "off"),
+        TestCase("turn on the torch", "torch", "state", "on"),
+        TestCase("turn off the torch", "torch", "state", "off"),
+        TestCase("turn on torch", "torch", "state", "on"),
+        TestCase("turn off torch", "torch", "state", "off"),
+        TestCase("turn the torch on", "torch", "state", "on"),
+        TestCase("turn the torch off", "torch", "state", "off"),
+        TestCase("torch on", "torch", "state", "on"),
+        TestCase("torch off", "torch", "state", "off"),
+        TestCase("turn on the light", "torch", "state", "on"),
+        TestCase("turn off the light", "torch", "state", "off"),
+        TestCase("turn the light on", "torch", "state", "on"),
+        TestCase("turn the light off", "torch", "state", "off"),
         TestCase("light on", "torch", "state", "on"),
         TestCase("light off", "torch", "state", "off"),
+        TestCase("lights on", "torch", "state", "on"),
+        TestCase("lights off", "torch", "state", "off"),
+        TestCase("light please", "torch", "state", "on"),
+        TestCase("flashlight please", "torch", "state", "on"),
+        TestCase("torch please", "torch", "state", "on"),
 
         // Volume
         TestCase("set volume to 80 percent", "set_volume", "percent", "80"),
@@ -41,25 +54,47 @@ class IntentAccuracyHarnessTest {
         TestCase("volume down", "set_volume", "percent", "down"),
         TestCase("turn up the volume", "set_volume", "percent", "up"),
         TestCase("turn down the volume", "set_volume", "percent", "down"),
+        TestCase("turn the volume up", "set_volume", "percent", "up"),
+        TestCase("turn the volume down", "set_volume", "percent", "down"),
+        TestCase("turn volume up", "set_volume", "percent", "up"),
+        TestCase("turn volume down", "set_volume", "percent", "down"),
         TestCase("louder", "set_volume", "percent", "up"),
+        TestCase("make it louder", "set_volume", "percent", "up"),
         TestCase("quieter", "set_volume", "percent", "down"),
+        TestCase("make it quieter", "set_volume", "percent", "down"),
+        TestCase("softer", "set_volume", "percent", "down"),
+        TestCase("increase the volume", "set_volume", "percent", "up"),
+        TestCase("decrease the volume", "set_volume", "percent", "down"),
 
         // Brightness
         TestCase("set brightness to 50 percent", "set_brightness", "percent", "50"),
         TestCase("screen brightness 80", "set_brightness", "percent", "80"),
         TestCase("screen brighter", "set_brightness", "percent", "up"),
         TestCase("make it brighter", "set_brightness", "percent", "up"),
+        TestCase("brighter", "set_brightness", "percent", "up"),
         TestCase("dim the screen", "set_brightness", "percent", "down"),
+        TestCase("dim screen", "set_brightness", "percent", "down"),
         TestCase("dimmer", "set_brightness", "percent", "down"),
+        TestCase("make it dimmer", "set_brightness", "percent", "down"),
+        TestCase("turn up the brightness", "set_brightness", "percent", "up"),
+        TestCase("turn down the brightness", "set_brightness", "percent", "down"),
+        TestCase("increase brightness", "set_brightness", "percent", "up"),
+        TestCase("decrease brightness", "set_brightness", "percent", "down"),
 
         // Battery & Light
         TestCase("what is the battery", "battery_status"),
         TestCase("battery status", "battery_status"),
         TestCase("how much battery is left", "battery_status"),
+        TestCase("how much battery left", "battery_status"),
         TestCase("battery percentage", "battery_status"),
+        TestCase("battery level", "battery_status"),
         TestCase("check battery", "battery_status"),
+        TestCase("battery", "battery_status"),
         TestCase("what is the ambient light level", "light_level"),
+        TestCase("what is the ambient light", "light_level"),
         TestCase("light level", "light_level"),
+        TestCase("ambient light", "light_level"),
+        TestCase("how bright is it", "light_level"),
 
         // Time & Date
         TestCase("what time is it", "get_time"),
@@ -72,10 +107,17 @@ class IntentAccuracyHarnessTest {
 
         // Timers & Alarms
         TestCase("set a timer for 5 minutes", "set_timer", "minutes", "5"),
+        TestCase("set timer for 5 minutes", "set_timer", "minutes", "5"),
         TestCase("timer 10 minutes", "set_timer", "minutes", "10"),
         TestCase("timer 30 seconds", "set_timer", "seconds", "30"),
+        TestCase("5 minute timer", "set_timer", "minutes", "5"),
         TestCase("cancel timers", "cancel_timers"),
+        TestCase("cancel timer", "cancel_timers"),
+        TestCase("stop timers", "cancel_timers"),
         TestCase("wake me up at 7 am", "set_alarm", "hour", "7"),
+        TestCase("wake me up at 7:30 am", "set_alarm", "hour", "7"),
+        TestCase("set alarm for 7 am", "set_alarm", "hour", "7"),
+        TestCase("alarm at 8 pm", "set_alarm", "hour", "20"),
 
         // IR Blaster (TV & AC)
         TestCase("turn on the tv", "ir_send", "command", "power"),
@@ -87,8 +129,11 @@ class IntentAccuracyHarnessTest {
 
         // Vision & OCR
         TestCase("what do you see", "look", "camera", "back"),
+        TestCase("describe what you see", "look", "camera", "back"),
         TestCase("what am i holding", "look", "camera", "front"),
+        TestCase("what am i holding right now", "look", "camera", "front"),
         TestCase("read this", "read_text", "camera", "back"),
+        TestCase("read the text", "read_text", "camera", "back"),
 
         // Weather & Web
         TestCase("what's the weather outside", "get_weather", "location", ""),
@@ -101,8 +146,12 @@ class IntentAccuracyHarnessTest {
         TestCase("search wikipedia for HTTP", "web_search", "query", "http"),
 
         // Notes
+        TestCase("remember my keys are in the drawer", "remember", "note", "my keys are in the drawer"),
         TestCase("remember that my bike lock is 1234", "remember", "note", "my bike lock is 1234"),
         TestCase("save a note that milk is in the fridge", "remember", "note", "milk is in the fridge"),
+        TestCase("recall keys", "recall", "query", "keys"),
+        TestCase("what did I say about keys", "recall", "query", "keys"),
+        TestCase("search notes for keys", "recall", "query", "keys"),
     )
 
     @Test

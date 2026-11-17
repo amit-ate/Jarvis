@@ -238,3 +238,45 @@ Each instrumentation run was preceded by `am force-stop com.jarvis.edge`. Withou
 ### VLM notes
 - `SmolVLM-500M-Instruct-Q8_0` with mtmd default tiling (`longest_edge = 1536`) took `159.5s`, so it was replaced by `SmolVLM-256M-Instruct-Q8_0` with `image_min_tokens = image_max_tokens = 64` (`n_past = 148` after prefill).
 - With those settings and no core pinning, runs measured `25.5s` and `93.3s`. Nearly all of that time went to CLIP encode, because mtmd's CLIP threadpool is created without a cpumask and its workers inherited the JNI thread's affinity, which includes the A53 cores. Wrapping `nativeDescribeImage` in `ScopedBigCoreAffinity` (cores 4–7) brought it to `20.1s` / `24.2s` / `25.8s`. The margin under the gate is still thin.
+
+## SIMD & Assembly Optimizations, FastIntents Harness & Benchmarking (Task Continuation)
+
+### 1. ARMv8.0-A NEON SIMD Vectorization (`simd_audio`)
+- **Implementation:** Vectorized single-pass PCM16 -> Float32 conversion with linear gain scaling, `[-1.0, 1.0]` clamp, and RMS sum-of-squares accumulator in vector registers (`vld1q_s16`, `vmovl_s16`, `vcvtq_f32_s32`, `vmulq_f32`, `vmaxq_f32`, `vminq_f32`, `vfmaq_f32`, `vaddvq_f32`).
+- **Loop Unrolling & Memory Pipelining:** Unrolled by 16 samples with 4 independent FMA accumulators and `__restrict__` pointers to hide Cortex-A73 4-cycle FMA latency.
+- **Physical Device Benchmark (`<serial>`, 20,000 frames × 512 samples = 10.24M samples):**
+  - Scalar C++ baseline: `18.30 ms` (`0.91 µs/frame`)
+  - ARM NEON SIMD: `8.99 ms` (**`0.45 µs/frame`**, `< 5.0 µs` limit)
+  - SIMD Speedup: **`2.03x - 2.12x`** (exceeds `>= 1.5x` target)
+  - SIMD Throughput: **`1,139.08 - 1,179.54 Million samples/sec`** (> 1.13 Billion samples/sec)
+  - Numerical fidelity: sample error `< 1e-4`, RMS error `< 1e-4` against scalar reference.
+
+### 2. ARMv8.0-A Assembly Dot-Product (`sadalp`)
+- **Optimization in `third_party/llama.cpp/ggml/src/ggml-cpu/ggml-cpu-impl.h` (`ggml_vdotq_s32`):**
+  Replaced 4 instructions (`2x vpaddlq_s16` + `2x vaddq_s32`) with `vpadalq_s16(vpadalq_s16(acc, p0), p1)`.
+- **Assembly Verification (`llvm-objdump -d libllama_jni.so`):**
+  Directly emits `sadalp vD.4s, vN.8h` (Signed Add and Accumulate Long Pairwise), halving vector reduction instructions per block.
+
+### 3. GBNF Grammar Sampler Caching & SDM636 Big-Core Threading
+- **GBNF Sampler Caching:** Cached compiled `llama_sampler` via `llama_sampler_clone()` in `llama_jni.cpp`. Drops grammar recompilation time from ~200ms down to **`27 µs`** (`0.027 ms`).
+- **Thread Pool Tuning for SDM636 Thermal Behavior:**
+  - With 4 big-core threads, junction temp on Cortex-A73 (`tsens_tz_sensor3..7`) crossed 60°C under continuous load, triggering kernel thermal throttling down to 633 MHz and core hotplugging.
+  - Setting `cparams.n_threads = 3` and `create_big_core_threadpool(3)` reduces dynamic power by ~25%, prevents thermal throttling past 60°C, avoids core hotplugging, and leaves 1 big core free for calling/audio/UI threads.
+- **Physical Device Benchmark (`SimdAndPerformanceDeviceTest` on `<serial>`):**
+  - Run 1 (uncached, 83 prompt tokens): `firstTokenMs = 3,504 ms` (`t_prefill = 3,408 ms`, `cachedTokens = 0`)
+  - Run 2 (cached grammar clone, 8 prompt tokens evaluated, 75 cached tokens reused): `firstTokenMs =` **`1,658 ms`** (`t_grammar_clone = 27 µs`, `cachedTokens = 75`, `< 2,200 ms` gate).
+
+### 4. FastIntents Routing Harness & 100% Accuracy
+- **Sub-10 Microsecond Fast-Path:** Instant regex-based intent classification in `FastIntents.kt` bypasses the 2–4s LLM generation for common voice commands.
+- **Coverage Added:**
+  - Torch: `"turn on flashlight"`, `"torch off"`, `"light please"`, `"switch off flashlight"`, conversational variants.
+  - Volume & Brightness: Relative `"volume up"`, `"louder"`, `"make it quieter"`, `"dim screen"`, `"screen brighter"`.
+  - Timers & Alarms: `"set timer for 5 minutes"`, `"5 minute timer"`, `"cancel timers"`, `"wake me up at 7 am"`.
+  - Notes: Added `recall` intent (`"recall keys"`, `"what did I say about keys"`) alongside `remember`.
+  - Device Status: `"battery"`, `"how much battery left"`, `"ambient light"`.
+  - Vision & OCR: `"read this"`, `"what do you see"`, `"what am I holding"`.
+- **Harness Benchmark (`IntentAccuracyHarnessTest`):**
+  - **116 / 116 test queries passed (100% accuracy)**.
+  - Average Match Latency: **`2.41 µs per query`** (`415,446 queries/sec`).
+  - All 52 JVM tests pass cleanly (`./gradlew testDebugUnitTest`).
+

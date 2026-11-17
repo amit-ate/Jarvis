@@ -8,7 +8,7 @@
 #include <arm_neon.h>
 #endif
 
-float simd_pcm16_to_float_and_rms(const int16_t *pcm, float *out, int length, float gain) {
+float simd_pcm16_to_float_and_rms(const int16_t * __restrict__ pcm, float * __restrict__ out, int length, float gain) {
   const float scale = gain * (1.0f / 32768.0f);
   float sum_sq = 0.0f;
   int i = 0;
@@ -19,42 +19,76 @@ float simd_pcm16_to_float_and_rms(const int16_t *pcm, float *out, int length, fl
   const float32x4_t v_max = vdupq_n_f32(1.0f);
   float32x4_t v_sum_sq0 = vdupq_n_f32(0.0f);
   float32x4_t v_sum_sq1 = vdupq_n_f32(0.0f);
+  float32x4_t v_sum_sq2 = vdupq_n_f32(0.0f);
+  float32x4_t v_sum_sq3 = vdupq_n_f32(0.0f);
 
-  const int simd_len = length - (length % 8);
-  for (; i < simd_len; i += 8) {
-    // Load 8 16-bit signed PCM samples
+  // Process 16 samples (32 bytes input -> 64 bytes output) per iteration
+  const int simd_len16 = length - (length % 16);
+  for (; i < simd_len16; i += 16) {
+    int16x8_t s16_0 = vld1q_s16(pcm + i);
+    int16x8_t s16_1 = vld1q_s16(pcm + i + 8);
+
+    int32x4_t s32_0 = vmovl_s16(vget_low_s16(s16_0));
+    int32x4_t s32_1 = vmovl_high_s16(s16_0);
+    int32x4_t s32_2 = vmovl_s16(vget_low_s16(s16_1));
+    int32x4_t s32_3 = vmovl_high_s16(s16_1);
+
+    float32x4_t f0 = vcvtq_f32_s32(s32_0);
+    float32x4_t f1 = vcvtq_f32_s32(s32_1);
+    float32x4_t f2 = vcvtq_f32_s32(s32_2);
+    float32x4_t f3 = vcvtq_f32_s32(s32_3);
+
+    f0 = vmulq_f32(f0, v_scale);
+    f1 = vmulq_f32(f1, v_scale);
+    f2 = vmulq_f32(f2, v_scale);
+    f3 = vmulq_f32(f3, v_scale);
+
+    f0 = vminq_f32(vmaxq_f32(f0, v_min), v_max);
+    f1 = vminq_f32(vmaxq_f32(f1, v_min), v_max);
+    f2 = vminq_f32(vmaxq_f32(f2, v_min), v_max);
+    f3 = vminq_f32(vmaxq_f32(f3, v_min), v_max);
+
+    vst1q_f32(out + i, f0);
+    vst1q_f32(out + i + 4, f1);
+    vst1q_f32(out + i + 8, f2);
+    vst1q_f32(out + i + 12, f3);
+
+    v_sum_sq0 = vfmaq_f32(v_sum_sq0, f0, f0);
+    v_sum_sq1 = vfmaq_f32(v_sum_sq1, f1, f1);
+    v_sum_sq2 = vfmaq_f32(v_sum_sq2, f2, f2);
+    v_sum_sq3 = vfmaq_f32(v_sum_sq3, f3, f3);
+  }
+
+  // Handle remaining 8 samples if any
+  if (i + 8 <= length) {
     int16x8_t s16 = vld1q_s16(pcm + i);
-
-    // Widen to two int32x4_t vectors
     int32x4_t s32_lo = vmovl_s16(vget_low_s16(s16));
     int32x4_t s32_hi = vmovl_high_s16(s16);
 
-    // Convert to float
     float32x4_t f_lo = vcvtq_f32_s32(s32_lo);
     float32x4_t f_hi = vcvtq_f32_s32(s32_hi);
 
-    // Scale by gain / 32768.0f
     f_lo = vmulq_f32(f_lo, v_scale);
     f_hi = vmulq_f32(f_hi, v_scale);
 
-    // Clamp to [-1.0f, 1.0f]
     f_lo = vminq_f32(vmaxq_f32(f_lo, v_min), v_max);
     f_hi = vminq_f32(vmaxq_f32(f_hi, v_min), v_max);
 
-    // Store scaled and clamped samples directly to output buffer
     vst1q_f32(out + i, f_lo);
     vst1q_f32(out + i + 4, f_hi);
 
-    // Fused multiply-accumulate for RMS sum-of-squares calculation
     v_sum_sq0 = vfmaq_f32(v_sum_sq0, f_lo, f_lo);
     v_sum_sq1 = vfmaq_f32(v_sum_sq1, f_hi, f_hi);
+    i += 8;
   }
 
-  // Horizontal sum across vector lanes
-  sum_sq = vaddvq_f32(vaddq_f32(v_sum_sq0, v_sum_sq1));
+  // Horizontal reduction across the 4 independent accumulators
+  float32x4_t v_sum_total = vaddq_f32(vaddq_f32(v_sum_sq0, v_sum_sq1),
+                                      vaddq_f32(v_sum_sq2, v_sum_sq3));
+  sum_sq = vaddvq_f32(v_sum_total);
 #endif
 
-  // Remainder scalar handling
+  // Remainder scalar handling (< 8 samples)
   for (; i < length; ++i) {
     float f = static_cast<float>(pcm[i]) * scale;
     if (f < -1.0f) f = -1.0f;
@@ -67,7 +101,7 @@ float simd_pcm16_to_float_and_rms(const int16_t *pcm, float *out, int length, fl
   return std::sqrt(sum_sq / static_cast<float>(length));
 }
 
-float scalar_pcm16_to_float_and_rms(const int16_t *pcm, float *out, int length, float gain) {
+float scalar_pcm16_to_float_and_rms(const int16_t * __restrict__ pcm, float * __restrict__ out, int length, float gain) {
   const float scale = gain * (1.0f / 32768.0f);
   float sum_sq = 0.0f;
   for (int i = 0; i < length; ++i) {

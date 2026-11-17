@@ -62,7 +62,7 @@ class SetVolumeTool(private val context: Context) : Tool {
         val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val current = am.getStreamVolume(AudioManager.STREAM_MUSIC)
         val currentPct = if (max > 0) ((current.toDouble() / max) * 100).roundToInt() else 50
-        val rawPct = args["percent"]?.trim()?.lowercase()
+        val rawPct = (args["percent"] ?: args["level"] ?: args["volume"] ?: args["value"])?.trim()?.lowercase()
         val pct = when (rawPct) {
             "up" -> (currentPct + 15).coerceIn(0, 100)
             "down" -> (currentPct - 15).coerceIn(0, 100)
@@ -83,7 +83,7 @@ class SetBrightnessTool(
     override val params = mapOf("percent" to null)
 
     override suspend fun run(args: Map<String, String>): ToolResult {
-        val rawPct = args["percent"]?.trim()?.lowercase()
+        val rawPct = (args["percent"] ?: args["level"] ?: args["brightness"])?.trim()?.lowercase()
         val pct = when (rawPct) {
             "up" -> 85
             "down" -> 25
