@@ -148,13 +148,24 @@ class IntentAccuracyHarnessTest {
         TestCase("who is the sister of Rahul Gandhi", "web_search", "query", "the sister of rahul gandhi"),
         TestCase("what is the capital of France", "web_search", "query", "france"),
 
-        // Notes
+        // Notes & Self-Evolving Mind
         TestCase("remember my keys are in the drawer", "remember", "note", "my keys are in the drawer"),
         TestCase("remember that my bike lock is 1234", "remember", "note", "my bike lock is 1234"),
         TestCase("save a note that milk is in the fridge", "remember", "note", "milk is in the fridge"),
         TestCase("recall keys", "recall", "query", "keys"),
         TestCase("what did I say about keys", "recall", "query", "keys"),
         TestCase("search notes for keys", "recall", "query", "keys"),
+        TestCase("remind me in 5 minutes to check the oven", "remind", "task", "check the oven"),
+        TestCase("remind me at 6 pm to take medicine", "remind", "when", "6 pm"),
+        TestCase("forget that", "forget", "target", "last"),
+        TestCase("forget my bike lock", "forget", "target", "my bike lock"),
+        TestCase("what did you learn today", "mind_status", "action", "learned_today"),
+        TestCase("what do you know about me", "mind_status", "action", "know_about_me"),
+        TestCase("how are you", "mind_status", "action", "self_status"),
+        TestCase("stop learning", "mind_status", "action", "pause_learning"),
+        TestCase("resume learning", "mind_status", "action", "resume_learning"),
+        TestCase("be quiet", "mind_status", "action", "be_quiet"),
+        TestCase("go back to yesterday's brain", "mind_status", "action", "rollback_brain"),
     )
 
     @Test

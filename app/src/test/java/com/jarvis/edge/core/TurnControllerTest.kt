@@ -40,6 +40,18 @@ class TurnControllerTest {
         override fun reset() = Unit
     }
 
+    private class QueueLive(private val replies: ArrayDeque<String>) : LiveTranscriber {
+        private var current = ""
+        override fun accept(frame: FloatArray): String = current
+        override fun finish(): String {
+            current = if (replies.isEmpty()) "" else replies.removeFirst()
+            return current
+        }
+        override fun reset() {
+            current = ""
+        }
+    }
+
     private class FakeSpeaker(
         private val stopOnSentence: String? = null,
     ) : Speaker {
@@ -214,5 +226,69 @@ class TurnControllerTest {
         assertEquals(listOf("First sentence."), speaker.spoken)
         assertFalse("Second sentence." in speaker.spoken)
         assertEquals(AssistantState.IDLE, states.last())
+    }
+
+    @Test
+    fun `strong ASR disagreement asks confirmation and confirms with yes`() = runBlocking {
+        val speaker = FakeSpeaker()
+        val confirmed = mutableListOf<Pair<String, String>>()
+        val vad = ScriptedVad(2)
+        val live = QueueLive(ArrayDeque(listOf("tell about alpha beta", "yes")))
+        val accurate = object : Transcriber {
+            override fun transcribe(samples: FloatArray) = "explain quantum physics"
+        }
+        val tc = TurnController(
+            segmenter = SpeechSegmenter(vad, trailingSilenceMs = 64),
+            live = live,
+            accurate = accurate,
+            brain = dummyBrain("SAY: Quantum physics studies energy and matter at atomic scales."),
+            speaker = speaker,
+            setState = {},
+            onCorrectionConfirmed = { heard, meant -> confirmed.add(heard to meant) },
+        )
+
+        tc.runTurn(dummyFrames())
+        assertTrue(tc.hasPendingConfirmation)
+        assertEquals(listOf("Did you say explain quantum physics?"), speaker.spoken)
+
+        vad.reset()
+        tc.runTurn(dummyFrames())
+        assertFalse(tc.hasPendingConfirmation)
+        assertEquals(listOf("tell about alpha beta" to "explain quantum physics"), confirmed)
+        assertEquals(
+            listOf(
+                "Did you say explain quantum physics?",
+                "Quantum physics studies energy and matter at atomic scales.",
+            ),
+            speaker.spoken,
+        )
+    }
+
+    @Test
+    fun `confirmation answered with no clears pending state and asks to repeat`() = runBlocking {
+        val speaker = FakeSpeaker()
+        val vad = ScriptedVad(2)
+        val live = QueueLive(ArrayDeque(listOf("apple orange", "no")))
+        val accurate = object : Transcriber {
+            override fun transcribe(samples: FloatArray) = "rocket science"
+        }
+        val tc = TurnController(
+            segmenter = SpeechSegmenter(vad, trailingSilenceMs = 64),
+            live = live,
+            accurate = accurate,
+            brain = dummyBrain("SAY: Should not be spoken."),
+            speaker = speaker,
+            setState = {},
+        )
+
+        tc.runTurn(dummyFrames())
+        assertTrue(tc.hasPendingConfirmation)
+        vad.reset()
+        tc.runTurn(dummyFrames())
+        assertFalse(tc.hasPendingConfirmation)
+        assertEquals(
+            listOf("Did you say rocket science?", TurnController.REPEAT_MSG),
+            speaker.spoken,
+        )
     }
 }

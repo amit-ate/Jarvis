@@ -4,6 +4,7 @@ import com.jarvis.edge.audio.LiveTranscriber
 import com.jarvis.edge.audio.Speaker
 import com.jarvis.edge.audio.SpeechSegmenter
 import com.jarvis.edge.audio.Transcriber
+import com.jarvis.edge.audio.TranscriptArbiter
 import com.jarvis.edge.brain.Brain
 import com.jarvis.edge.brain.FastIntents
 import kotlinx.coroutines.CancellationException
@@ -19,7 +20,23 @@ class TurnController(
     private val preferStreaming: Boolean = false,
     private val onTranscript: (String) -> Unit = {},
     private val onReplyChunk: (String) -> Unit = {},
+    private val arbiter: TranscriptArbiter = TranscriptArbiter(),
+    private val correctionsProvider: () -> Map<String, String> = { emptyMap() },
+    private val onTranscriptionDetail: (liveRaw: String, accurateRaw: String, chosen: String) -> Unit = { _, _, _ -> },
+    private val onCorrectionConfirmed: (heard: String, meant: String) -> Unit = { _, _ -> },
+    private val onSpeechActivity: () -> Unit = {},
 ) {
+    private data class PendingConfirmation(
+        val heardRaw: String,
+        val candidate: String,
+    )
+
+    @Volatile
+    private var pendingConfirmation: PendingConfirmation? = null
+
+    val hasPendingConfirmation: Boolean
+        get() = pendingConfirmation != null
+
     suspend fun runTurn(frames: Flow<FloatArray>) {
         setState(AssistantState.LISTENING)
         speaker.clearStop()
@@ -51,23 +68,83 @@ class TurnController(
             }
 
             if (noSpeech) {
+                pendingConfirmation = null
                 live.reset()
                 return
             }
 
             val samples = capturedSamples ?: return
             val finalLive = live.finish().trim()
+            onSpeechActivity()
 
             setState(AssistantState.THINKING)
 
-            val transcript = if (FastIntents.isClosedCommand(finalLive) || accurate == null || (preferStreaming && finalLive.length >= 3)) {
-                finalLive
+            val pending = pendingConfirmation
+            if (pending != null) {
+                val replyText = if (arbiter.isYes(finalLive) || arbiter.isNo(finalLive) || accurate == null) {
+                    finalLive
+                } else {
+                    val acc = accurate.transcribe(samples).trim()
+                    arbiter.arbitrate(finalLive, acc).chosen
+                }.trim()
+
+                pendingConfirmation = null
+                if (arbiter.isYes(replyText)) {
+                    if (pending.heardRaw.isNotBlank() && !pending.heardRaw.equals(pending.candidate, ignoreCase = true)) {
+                        onCorrectionConfirmed(pending.heardRaw, pending.candidate)
+                    }
+                    onTranscript(pending.candidate)
+                    onTranscriptionDetail(pending.heardRaw, pending.candidate, pending.candidate)
+                    speakBrainResponse(pending.candidate)
+                    return
+                }
+                if (arbiter.isNo(replyText) || replyText.length < 2) {
+                    onTranscript(replyText)
+                    val msg = REPEAT_MSG
+                    setState(AssistantState.SPEAKING)
+                    onReplyChunk(msg)
+                    speaker.speak(msg)
+                    return
+                }
+                // User moved on to a new command instead of yes/no; treat replyText normally.
+            }
+
+            val corrections = correctionsProvider()
+            var liveRaw = finalLive
+            var accurateRaw = ""
+            val transcript: String
+
+            if (FastIntents.isClosedCommand(finalLive) || accurate == null || (preferStreaming && finalLive.length >= 3)) {
+                transcript = arbiter.applyCorrections(finalLive, corrections).trim()
             } else {
-                val accurateText = accurate.transcribe(samples).trim()
-                selectBestTranscript(finalLive, accurateText)
-            }.trim()
+                accurateRaw = accurate.transcribe(samples).trim()
+                val arb = arbiter.arbitrate(
+                    live = finalLive,
+                    accurate = accurateRaw,
+                    corrections = corrections,
+                    intentMatcher = { FastIntents.match(it) != null },
+                )
+                liveRaw = arb.liveRaw
+                accurateRaw = arb.accurateRaw
+                transcript = arb.chosen.trim()
+
+                if (arb.needsConfirmation && transcript.length >= 2) {
+                    onTranscript(transcript)
+                    onTranscriptionDetail(liveRaw, accurateRaw, transcript)
+                    pendingConfirmation = PendingConfirmation(
+                        heardRaw = liveRaw.ifBlank { accurateRaw },
+                        candidate = transcript,
+                    )
+                    val confirmPrompt = "Did you say $transcript?"
+                    setState(AssistantState.SPEAKING)
+                    onReplyChunk(confirmPrompt)
+                    speaker.speak(confirmPrompt)
+                    return
+                }
+            }
 
             onTranscript(transcript)
+            onTranscriptionDetail(liveRaw, accurateRaw, transcript)
 
             if (transcript.length < 2) {
                 setState(AssistantState.SPEAKING)
@@ -76,21 +153,7 @@ class TurnController(
                 return
             }
 
-            var speakingStarted = false
-            brain.respond(transcript) { sentence ->
-                if (speaker.isStopped) {
-                    throw StopSpeakingSignal()
-                }
-                if (!speakingStarted) {
-                    setState(AssistantState.SPEAKING)
-                    speakingStarted = true
-                }
-                onReplyChunk(sentence)
-                speaker.speak(sentence)
-                if (speaker.isStopped) {
-                    throw StopSpeakingSignal()
-                }
-            }
+            speakBrainResponse(transcript)
         } catch (_: StopSpeakingSignal) {
             // Stop speaking mid-response cleanly and return to IDLE.
         } finally {
@@ -98,31 +161,22 @@ class TurnController(
         }
     }
 
-    private fun selectBestTranscript(live: String, accurate: String): String {
-        val l = live.trim()
-        val a = accurate.trim()
-        if (a.isBlank()) return l
-        if (l.isBlank()) return a
-        if (l.equals(a, ignoreCase = true)) return a
-
-        // FastIntents match check: if one matches a known voice intent and the other doesn't,
-        // prefer the one that matches.
-        val lMatch = FastIntents.match(l)
-        val aMatch = FastIntents.match(a)
-        if (lMatch != null && aMatch == null) return l
-        if (aMatch != null && lMatch == null) return a
-
-        // If live was an immediate closed command (e.g. torch, volume), prefer live for latency
-        if (FastIntents.isClosedCommand(l)) return l
-
-        // Check for hallucination / garbage indicators (e.g. dangling trailing quotes, excessive repetition)
-        val aHasGarbage = a.endsWith("'") || a.endsWith("\"") || (l.split(" ").size >= 4 && a.split(" ").size <= l.split(" ").size / 2)
-        val lHasGarbage = l.endsWith("'") || l.endsWith("\"") || (a.split(" ").size >= 4 && l.split(" ").size <= a.split(" ").size / 2)
-        if (aHasGarbage && !lHasGarbage) return l
-        if (lHasGarbage && !aHasGarbage) return a
-
-        // Default to accurate (offline bidirectional model)
-        return a
+    private suspend fun speakBrainResponse(transcript: String) {
+        var speakingStarted = false
+        brain.respond(transcript) { sentence ->
+            if (speaker.isStopped) {
+                throw StopSpeakingSignal()
+            }
+            if (!speakingStarted) {
+                setState(AssistantState.SPEAKING)
+                speakingStarted = true
+            }
+            onReplyChunk(sentence)
+            speaker.speak(sentence)
+            if (speaker.isStopped) {
+                throw StopSpeakingSignal()
+            }
+        }
     }
 
     private class TurnDoneSignal : CancellationException("Turn segmentation finished")
@@ -130,5 +184,6 @@ class TurnController(
 
     companion object {
         const val SORRY_MSG = "Sorry, I didn't catch that."
+        const val REPEAT_MSG = "Okay, please repeat what you meant."
     }
 }

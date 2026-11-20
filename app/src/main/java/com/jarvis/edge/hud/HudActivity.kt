@@ -14,6 +14,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -25,6 +26,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -47,14 +51,18 @@ import kotlinx.coroutines.delay
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.sqrt
 
 class HudActivity : ComponentActivity(), SensorEventListener {
 
     private var sensorManager: SensorManager? = null
     private var lightSensor: Sensor? = null
     private var proxSensor: Sensor? = null
+    private var accelSensor: Sensor? = null
     private val currentLux = mutableFloatStateOf(100f)
     private var nearEnteredAtMs: Long = 0L
+    private var lastAccelMag: Float = 9.81f
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -71,6 +79,7 @@ class HudActivity : ComponentActivity(), SensorEventListener {
         sensorManager = getSystemService(SENSOR_SERVICE) as? SensorManager
         lightSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_LIGHT)
         proxSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_PROXIMITY)
+        accelSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
         ensurePermissionsAndStart()
 
@@ -80,6 +89,8 @@ class HudActivity : ComponentActivity(), SensorEventListener {
             val transcript by JarvisService.transcript.collectAsState()
             val reply by JarvisService.reply.collectAsState()
             val micLevel by JarvisService.micLevel.collectAsState()
+            val activeExpert by JarvisService.activeExpert.collectAsState()
+            val mindState by MindUiBridge.state.collectAsState()
             val fillWhite by JarvisService.screenFillWhite.collectAsState()
             val brightnessOverride by JarvisService.brightnessOverride.collectAsState()
             val lux by currentLux
@@ -111,64 +122,99 @@ class HudActivity : ComponentActivity(), SensorEventListener {
                 )
             } else {
                 val interaction = remember { MutableInteractionSource() }
-                Column(
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black)
-                        .combinedClickable(
-                            interactionSource = interaction,
-                            indication = null,
-                            onClick = {
-                                if (state == AssistantState.SPEAKING) {
-                                    JarvisService.requestStopSpeaking(this@HudActivity)
-                                } else if (state == AssistantState.IDLE) {
-                                    JarvisService.requestManualWake(this@HudActivity)
-                                }
-                            },
-                            onLongClick = {
-                                startActivity(Intent(this@HudActivity, SetupActivity::class.java))
-                            },
-                        )
-                        .padding(24.dp),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                        .background(Color.Black),
                 ) {
-                    if (state == AssistantState.IDLE && clockText.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .combinedClickable(
+                                interactionSource = interaction,
+                                indication = null,
+                                onClick = {
+                                    if (state == AssistantState.SPEAKING) {
+                                        JarvisService.requestStopSpeaking(this@HudActivity)
+                                    } else if (state == AssistantState.IDLE) {
+                                        JarvisService.requestManualWake(this@HudActivity)
+                                    }
+                                },
+                                onLongClick = {
+                                    startActivity(Intent(this@HudActivity, SetupActivity::class.java))
+                                },
+                            )
+                            .padding(24.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        if (state == AssistantState.IDLE && clockText.isNotEmpty()) {
+                            Text(
+                                text = clockText,
+                                color = Color(0xFF64748B),
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            Spacer(Modifier.height(16.dp))
+                        }
+
+                        JarvisOrb(state = state, micLevel = micLevel)
+                        Spacer(Modifier.height(20.dp))
+
                         Text(
-                            text = clockText,
-                            color = Color(0xFF64748B),
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Medium,
+                            text = state.name,
+                            color = Color(0xFF38BDF8),
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.SemiBold,
                         )
-                        Spacer(Modifier.height(16.dp))
-                    }
+                        Spacer(Modifier.height(8.dp))
 
-                    JarvisOrb(state = state, micLevel = micLevel)
-                    Spacer(Modifier.height(20.dp))
+                        if (transcript.isNotBlank()) {
+                            Text(
+                                text = "\"$transcript\"",
+                                color = Color(0xFF94A3B8),
+                                fontSize = 16.sp,
+                                textAlign = TextAlign.Center,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                        }
 
-                    Text(
-                        text = state.name,
-                        color = Color(0xFF38BDF8),
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Spacer(Modifier.height(8.dp))
-
-                    if (transcript.isNotBlank()) {
                         Text(
-                            text = "\"$transcript\"",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 16.sp,
+                            text = reply.ifBlank { message },
+                            color = Color(0xFFE2E8F0),
+                            fontSize = 18.sp,
                             textAlign = TextAlign.Center,
                         )
-                        Spacer(Modifier.height(6.dp))
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            startActivity(Intent(this@HudActivity, MindActivity::class.java))
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        border = BorderStroke(1.dp, Color(0xFF334155)),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color(0xFF0F172A),
+                            contentColor = Color(0xFF38BDF8),
+                        ),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 18.dp, end = 16.dp),
+                    ) {
+                        Text(
+                            text = "MIND (${mindState.facts.size})",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
                     }
 
                     Text(
-                        text = reply.ifBlank { message },
-                        color = Color(0xFFE2E8F0),
-                        fontSize = 18.sp,
-                        textAlign = TextAlign.Center,
+                        text = "Expert: $activeExpert • ${mindState.resources.healthLevel}",
+                        color = Color(0xFF64748B),
+                        fontSize = 12.sp,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 14.dp),
                     )
                 }
             }
@@ -180,6 +226,7 @@ class HudActivity : ComponentActivity(), SensorEventListener {
         applyImmersiveUi()
         lightSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
         proxSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        accelSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
     }
 
     override fun onPause() {
@@ -190,22 +237,38 @@ class HudActivity : ComponentActivity(), SensorEventListener {
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
             Sensor.TYPE_LIGHT -> {
+                val prevLux = currentLux.floatValue
                 currentLux.floatValue = event.values[0]
                 JarvisService.latestLux = event.values[0]
+                if (abs(event.values[0] - prevLux) > 25f) {
+                    JarvisService.latestMotionMs = System.currentTimeMillis()
+                }
             }
             Sensor.TYPE_PROXIMITY -> {
                 val maxRange = proxSensor?.maximumRange ?: 5f
                 val isNear = event.values[0] < maxRange
+                JarvisService.latestNearProximity = isNear
                 val now = System.currentTimeMillis()
                 if (isNear) {
                     nearEnteredAtMs = now
                 } else if (nearEnteredAtMs > 0L) {
                     val held = now - nearEnteredAtMs
                     nearEnteredAtMs = 0L
+                    JarvisService.latestMotionMs = now
                     if (held < 1000L && JarvisService.state.value == AssistantState.IDLE) {
                         JarvisService.requestManualWake(this)
                     }
                 }
+            }
+            Sensor.TYPE_ACCELEROMETER -> {
+                val x = event.values[0]
+                val y = event.values[1]
+                val z = event.values[2]
+                val mag = sqrt(x * x + y * y + z * z)
+                if (abs(mag - lastAccelMag) > 1.4f) {
+                    JarvisService.latestMotionMs = System.currentTimeMillis()
+                }
+                lastAccelMag = mag
             }
         }
     }

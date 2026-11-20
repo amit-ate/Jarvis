@@ -33,6 +33,12 @@ object FastIntents {
     private val cancelTimersRegex = Regex(
         "^(?:cancel|stop|clear|delete)\\s+(?:all\\s+)?(?:my\\s+)?timers?$"
     )
+    private val remindRelativeRegex = Regex(
+        "^(?:remind me(?: in| after)?|set (?:a )?reminder(?: for| in)?)\\s+(\\d+\\s*(?:hours?|hrs?|hr|minutes?|mins?|min|seconds?|secs?|sec))\\s+(?:to\\s+)?(.+)$"
+    )
+    private val remindClockRegex = Regex(
+        "^(?:remind me|set (?:a )?reminder)\\s+(?:at|for)\\s+(\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)\\s+(?:to\\s+)?(.+)$"
+    )
     private val torchRegex = Regex(
         "^(?:(?:turn|switch)\\s+)?(?:the\\s+)?(?:flashlight|torch|flash|lights?)\\s+(on|off)$" +
         "|^(?:(?:turn|switch)\\s+)?(on|off)\\s+(?:the\\s+)?(?:flashlight|torch|flash|lights?)$" +
@@ -60,6 +66,33 @@ object FastIntents {
     )
     private val recallRegex = Regex(
         "^(?:recall(?: (?:my |the )?notes?(?: about| for)?)?|search (?:my |the )?notes?(?: for)?|find (?:my |the )?notes?(?: about| for)?|what did i (?:say|write|note|save) about|what do you remember about)\\s+(.+)$"
+    )
+    private val forgetLastRegex = Regex(
+        "^(?:forget that|undo that|undo last learning|undo the last thing)$"
+    )
+    private val forgetTargetRegex = Regex(
+        "^(?:forget(?: about)?|delete (?:the )?(?:memory|note|fact)(?: about)?)\\s+(.+)$"
+    )
+    private val learnedTodayRegex = Regex(
+        "^(?:what did you learn(?: today)?|what have you learned(?: today)?|recent learnings|show learnings)$"
+    )
+    private val knowAboutMeRegex = Regex(
+        "^(?:what do you know about me|what facts do you know(?: about me)?)$"
+    )
+    private val selfStatusRegex = Regex(
+        "^(?:how are you(?: doing| feeling)?|system status|mind status|self status|check yourself)$"
+    )
+    private val pauseLearningRegex = Regex(
+        "^(?:stop|pause)\\s+learning$"
+    )
+    private val resumeLearningRegex = Regex(
+        "^(?:resume|start)\\s+learning$"
+    )
+    private val beQuietRegex = Regex(
+        "^(?:be quiet|mute initiatives|stay quiet|quiet mode)$"
+    )
+    private val rollbackBrainRegex = Regex(
+        "^(?:go back to yesterday'?s brain|rollback brain|revert brain|previous brain version)$"
     )
     private val lightRegex = Regex(
         "^(?:what(?:'s| is)? (?:the )?(?:ambient )?light(?: level)?|how bright is it(?: in here)?|light level|ambient light)$"
@@ -105,6 +138,9 @@ object FastIntents {
     fun isClosedCommand(text: String): Boolean {
         val call = match(text) ?: return false
         if (call.name == "web_search") return false
+        if (call.name == "remind") return false
+        if (call.name == "remember") return false
+        if (call.name == "forget" && call.args["target"] != "last") return false
         if (call.name == "get_weather" && !call.args["location"].isNullOrEmpty()) return false
         return true
     }
@@ -154,6 +190,21 @@ object FastIntents {
 
         if (cancelTimersRegex.matches(norm)) return ToolCall("cancel_timers", emptyMap())
 
+        remindRelativeRegex.matchEntire(norm)?.let { m ->
+            val whenSpec = m.groupValues[1].trim()
+            val task = m.groupValues[2].trim()
+            if (whenSpec.isNotEmpty() && task.isNotEmpty()) {
+                return ToolCall("remind", mapOf("when" to whenSpec, "task" to task))
+            }
+        }
+        remindClockRegex.matchEntire(norm)?.let { m ->
+            val whenSpec = m.groupValues[1].trim()
+            val task = m.groupValues[2].trim()
+            if (whenSpec.isNotEmpty() && task.isNotEmpty()) {
+                return ToolCall("remind", mapOf("when" to whenSpec, "task" to task))
+            }
+        }
+
         torchRegex.matchEntire(norm)?.let { m ->
             val state = (m.groupValues[1].ifEmpty { m.groupValues[2] }).ifEmpty { "on" }
             if (state == "on" || state == "off") {
@@ -187,6 +238,20 @@ object FastIntents {
             val q = m.groupValues[1].trim()
             return ToolCall("recall", mapOf("query" to q))
         }
+        if (forgetLastRegex.matches(norm)) {
+            return ToolCall("forget", mapOf("target" to "last"))
+        }
+        forgetTargetRegex.matchEntire(norm)?.let { m ->
+            return ToolCall("forget", mapOf("target" to m.groupValues[1].trim()))
+        }
+
+        if (learnedTodayRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "learned_today"))
+        if (knowAboutMeRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "know_about_me"))
+        if (selfStatusRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "self_status"))
+        if (pauseLearningRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "pause_learning"))
+        if (resumeLearningRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "resume_learning"))
+        if (beQuietRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "be_quiet"))
+        if (rollbackBrainRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "rollback_brain"))
 
         if (batteryRegex.matches(norm)) return ToolCall("battery_status", emptyMap())
         if (lightRegex.matches(norm)) return ToolCall("light_level", emptyMap())

@@ -96,6 +96,7 @@ class LlmEngineDeviceTest {
                     true
                 }
                 val raw = sb.toString().trim()
+                android.util.Log.i("LlmDeviceTest", "reply ${idx + 1}/${prompts.size}: '$raw'")
                 val parsed = parseModelOutput(raw)
                 assertTrue(
                     "Expected grammar-constrained SAY: or Call JSON for '$q', got '$raw'",

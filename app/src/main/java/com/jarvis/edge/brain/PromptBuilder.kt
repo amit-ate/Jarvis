@@ -132,17 +132,10 @@ class PromptBuilder @JvmOverloads constructor(
     }
 
     private fun appendFewShots(sb: StringBuilder) {
-        appendUserTurn(sb, "What is the capital of France?")
-        appendAssistantTurn(sb, "SAY: The capital of France is Paris.")
-        appendUserTurn(sb, "Why is the sky blue?")
-        appendAssistantTurn(
-            sb,
-            "SAY: Sunlight scatters off air molecules, and blue light scatters more than other colors.",
-        )
-        if (tools.any { it.name == "web_search" }) {
-            appendUserTurn(sb, "Who won the 2024 Nobel Prize in Physics?")
-            appendAssistantTurn(sb, """{"tool":"web_search","args":{"query":"2024 Nobel Prize in Physics winner"}}""")
-        }
+        appendUserTurn(sb, "Hi")
+        appendAssistantTurn(sb, "SAY: Hello, how can I help?")
+        appendUserTurn(sb, "2+2?")
+        appendAssistantTurn(sb, "SAY: 4.")
     }
 
     private fun appendUserTurn(sb: StringBuilder, text: String) {

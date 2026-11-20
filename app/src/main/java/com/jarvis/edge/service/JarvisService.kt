@@ -19,27 +19,54 @@ import com.jarvis.edge.audio.SherpaMoonshineTranscriber
 import com.jarvis.edge.audio.SherpaSpeaker
 import com.jarvis.edge.audio.SherpaWakeWord
 import com.jarvis.edge.audio.SileroVad
+import com.jarvis.edge.audio.SimdAudio
 import com.jarvis.edge.audio.SpeechSegmenter
+import com.jarvis.edge.audio.TranscriptArbiter
 import com.jarvis.edge.brain.Brain
+import com.jarvis.edge.brain.EmbeddingEngine
+import com.jarvis.edge.brain.ExpertRouter
 import com.jarvis.edge.brain.FastIntents
+import com.jarvis.edge.brain.LlamaEmbeddingEngine
 import com.jarvis.edge.brain.LlamaJniEngine
 import com.jarvis.edge.brain.LlmEngine
 import com.jarvis.edge.brain.PromptBuilder
+import com.jarvis.edge.brain.ToolCall
 import com.jarvis.edge.core.AssistantState
 import com.jarvis.edge.core.ModelPaths
 import com.jarvis.edge.core.TurnController
 import com.jarvis.edge.core.canMoveTo
+import com.jarvis.edge.hud.BrainVersionUi
+import com.jarvis.edge.hud.CorrectionItemUi
+import com.jarvis.edge.hud.FactItemUi
+import com.jarvis.edge.hud.JournalItemUi
+import com.jarvis.edge.hud.MindUiActions
+import com.jarvis.edge.hud.MindUiBridge
+import com.jarvis.edge.hud.MindUiState
+import com.jarvis.edge.hud.ResourceStatusUi
 import com.jarvis.edge.hud.SetupActivity
+import com.jarvis.edge.hud.ShortcutItemUi
+import com.jarvis.edge.hud.VocabItemUi
+import com.jarvis.edge.mind.Episode
+import com.jarvis.edge.mind.HotwordsWriter
+import com.jarvis.edge.mind.InitiativeEngine
+import com.jarvis.edge.mind.LearnedShortcut
+import com.jarvis.edge.mind.MindForgetTool
+import com.jarvis.edge.mind.MindRecallTool
+import com.jarvis.edge.mind.MindRememberTool
+import com.jarvis.edge.mind.MindStatusTool
+import com.jarvis.edge.mind.ReflectionWorker
+import com.jarvis.edge.mind.RemindTool
+import com.jarvis.edge.mind.SelfModel
+import com.jarvis.edge.mind.SqliteMindStore
+import com.jarvis.edge.mind.VectorMath
 import com.jarvis.edge.tools.BatteryStatusTool
 import com.jarvis.edge.tools.CancelTimersTool
+import com.jarvis.edge.tools.GetDateTool
+import com.jarvis.edge.tools.GetTimeTool
 import com.jarvis.edge.tools.GetWeatherTool
 import com.jarvis.edge.tools.LightLevelTool
 import com.jarvis.edge.tools.LookTool
-import com.jarvis.edge.tools.NotesStore
 import com.jarvis.edge.tools.ReadTextTool
-import com.jarvis.edge.tools.RecallTool
-import com.jarvis.edge.tools.RememberTool
-import com.jarvis.edge.tools.WebSearchTool
 import com.jarvis.edge.tools.SetAlarmTool
 import com.jarvis.edge.tools.SetBrightnessTool
 import com.jarvis.edge.tools.SetTimerTool
@@ -48,8 +75,7 @@ import com.jarvis.edge.tools.TimerBroadcastReceiver
 import com.jarvis.edge.tools.TimerScheduler
 import com.jarvis.edge.tools.ToolRegistry
 import com.jarvis.edge.tools.TorchTool
-import com.jarvis.edge.tools.GetDateTool
-import com.jarvis.edge.tools.GetTimeTool
+import com.jarvis.edge.tools.WebSearchTool
 import com.jarvis.edge.tools.ir.IrCodes
 import com.jarvis.edge.tools.ir.IrTool
 import com.jarvis.edge.vision.CameraSnapshot
@@ -61,11 +87,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
@@ -75,6 +104,8 @@ class JarvisService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var wakeLock: PowerManager.WakeLock? = null
     private var voiceJob: Job? = null
+    private var reflectionJob: Job? = null
+    private var initiativeJob: Job? = null
 
     private var speaker: SherpaSpeaker? = null
     private var vad: SileroVad? = null
@@ -83,11 +114,19 @@ class JarvisService : Service() {
     private var liveTranscriber: SherpaLiveTranscriber? = null
     private var accurateTranscriber: SherpaMoonshineTranscriber? = null
     private var llmEngine: LlmEngine? = null
-    private var notesStore: NotesStore? = null
+    private var embeddingEngine: EmbeddingEngine? = null
+    private var mindStore: SqliteMindStore? = null
     private var cameraSnapshot: CameraSnapshot? = null
     private var mlKitOcr: MlKitOcr? = null
 
     private val manualWakeRequested = AtomicBoolean(false)
+    private val initiativeSpeaking = AtomicBoolean(false)
+
+    @Volatile private var lastInteractionMs: Long = System.currentTimeMillis()
+    @Volatile private var lastReflectionMs: Long = 0L
+    @Volatile private var lastLiveRaw: String = ""
+    @Volatile private var lastAccurateRaw: String = ""
+    @Volatile private var statusNotice: String = ""
     @Volatile private var diagFrames = 0
     @Volatile private var diagVadFrames = 0
     @Volatile private var diagMaxRms = 0f
@@ -113,6 +152,9 @@ class JarvisService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        MindUiBridge.actions = null
+        reflectionJob?.cancel()
+        initiativeJob?.cancel()
         voiceJob?.cancel()
         serviceScope.cancel()
         TimerBroadcastReceiver.onTimerFired = null
@@ -123,7 +165,8 @@ class JarvisService : Service() {
         runCatching { vad?.release() }
         runCatching { turnVad?.release() }
         runCatching { llmEngine?.unload() }
-        runCatching { notesStore?.close() }
+        runCatching { embeddingEngine?.unload() }
+        runCatching { mindStore?.close() }
         runCatching { cameraSnapshot?.shutdown() }
         runCatching { mlKitOcr?.close() }
         releaseWakeLock()
@@ -146,19 +189,57 @@ class JarvisService : Service() {
             }
 
             val healthGuard = HealthGuard.fromAndroidContext(this@JarvisService)
+            val mind = SqliteMindStore(this@JarvisService).also { mindStore = it }
+            if (mind.listModelVersions().isEmpty()) {
+                mind.recordModelVersion(
+                    baseModel = paths.llmFileName,
+                    adapterPath = null,
+                    evalScore = 0.0f,
+                    echoRate = 0.0f,
+                    toolAccuracy = 0.0f,
+                    active = true,
+                )
+            }
+
+            // Optional GGUF embedding model under /sdcard/Jarvis/models/embed/*.gguf; fallback to deterministic 128-d vector.
+            val embedFile = File(paths.root, "embed").listFiles { f -> f.isFile && f.extension == "gguf" }?.firstOrNull()
+            val ggufEmbedder = if (embedFile != null) {
+                runCatching {
+                    LlamaEmbeddingEngine().apply { load(embedFile) }
+                }.getOrNull()?.also { embeddingEngine = it }
+            } else {
+                null
+            }
+            val embedFn: (String) -> FloatArray = { text ->
+                if (ggufEmbedder != null && ggufEmbedder.isLoaded) {
+                    runCatching { ggufEmbedder.embed(text) }.getOrElse { VectorMath.simpleHashEmbed(text) }
+                } else {
+                    VectorMath.simpleHashEmbed(text)
+                }
+            }
+
+            val tokensFile = File(paths.root, "asr-zipformer/tokens.txt")
+            val hotwordsWriter = if (tokensFile.isFile) HotwordsWriter.fromTokensFile(tokensFile) else null
+            val hotwordsFile = File(filesDir, "zipformer_hotwords.txt")
+            regenerateHotwords(mind, hotwordsWriter, hotwordsFile)
+
+            // Pin always-on VAD and WakeWord to little cores (cpu0..3) so big cores stay cool and idle.
             val vadInstance = SileroVad(
                 modelFile = File(paths.root, "vad/silero_vad.onnx"),
                 threshold = 0.22f,
+                numThreads = 1,
                 minRms = 0.005f,
             ).also { vad = it }
             val turnVadInstance = SileroVad(
                 modelFile = File(paths.root, "vad/silero_vad.onnx"),
                 threshold = 0.35f,
+                numThreads = 1,
                 minRms = 0.010f,
             ).also { turnVad = it }
             val kwsInstance = SherpaWakeWord(
                 kwsDir = File(paths.root, "kws"),
-                onInitThread = { LlamaJniEngine.pinCurrentThreadToBigCores() },
+                numThreads = 2,
+                onInitThread = { SimdAudio.pinCurrentThreadToLittleCores() },
             ).also { wakeWord = it }
             val loggingVad = object : com.jarvis.edge.audio.Vad {
                 override fun isSpeech(frame: FloatArray): Boolean =
@@ -169,7 +250,10 @@ class JarvisService : Service() {
 
             val live = SherpaLiveTranscriber(
                 modelDir = File(paths.root, "asr-zipformer"),
+                numThreads = 2,
                 onInitThread = { LlamaJniEngine.pinCurrentThreadToBigCores() },
+                hotwordsFile = hotwordsFile,
+                hotwordsScore = 2.0f,
             ).also { liveTranscriber = it }
 
             val moonshineDir = File(paths.root, "asr-moonshine")
@@ -177,6 +261,7 @@ class JarvisService : Service() {
                 runCatching {
                     SherpaMoonshineTranscriber(
                         modelDir = moonshineDir,
+                        numThreads = 4,
                         onInitThread = { LlamaJniEngine.pinCurrentThreadToBigCores() },
                     ).also { accurateTranscriber = it }
                 }.getOrNull()
@@ -211,7 +296,21 @@ class JarvisService : Service() {
                 startStatus = "Missing ${paths.llmRelative()} — basic commands only"
             }
 
-            val notes = NotesStore(this@JarvisService).also { notesStore = it }
+            val adaptersDir = File(paths.root, "adapters")
+            val expertRouter = ExpertRouter.fromManifestFile(File(adaptersDir, "experts.json"), adaptersDir)
+            val initiativeEngine = InitiativeEngine(store = mind)
+
+            val selfModel = SelfModel(
+                context = this@JarvisService,
+                store = mind,
+                activeModelProvider = { paths.llmFileName },
+                activeExpertsProvider = { listOf(_activeExpert.value) },
+                luxProvider = { latestLux },
+                nearProximityProvider = { latestNearProximity },
+                lastMotionMsProvider = { latestMotionMs },
+                lastReflectionMsProvider = { lastReflectionMs },
+            )
+
             val timerScheduler = TimerScheduler(this@JarvisService)
             val baseIrJson = assets.open("ir/codes.json").bufferedReader().use { it.readText() }
             val irOverrideFile = File(filesDir, SetupActivity.OVERRIDE_FILE_NAME)
@@ -243,13 +342,20 @@ class JarvisService : Service() {
                 SetTimerTool(timerScheduler),
                 SetAlarmTool(timerScheduler),
                 CancelTimersTool(timerScheduler),
+                RemindTool(mind),
                 TorchTool(this@JarvisService),
                 SetVolumeTool(this@JarvisService),
                 SetBrightnessTool(this@JarvisService) { b -> _brightnessOverride.value = b },
                 BatteryStatusTool(this@JarvisService),
                 LightLevelTool(this@JarvisService),
-                RememberTool(notes),
-                RecallTool(notes),
+                MindRememberTool(mind, embedFn),
+                MindRecallTool(mind, embedFn),
+                MindForgetTool(mind, embedFn),
+                MindStatusTool(
+                    store = mind,
+                    selfSnapshotProvider = { selfModel.capture() },
+                    onMuteRequested = { durationMs -> initiativeEngine.muteFor(durationMs) },
+                ),
                 IrTool(irCodesProvider, IrTool.androidTransmitter(this@JarvisService)),
                 ReadTextTool(
                     capturer = snapshotter,
@@ -283,6 +389,64 @@ class JarvisService : Service() {
                 tools = registry,
                 healthGuard = healthGuard,
                 log = { msg -> android.util.Log.i("JarvisBrain", msg) },
+                expertRouter = expertRouter,
+                shortcutMatcher = { userText ->
+                    mind.matchShortcut(embedFn(userText), minSim = 0.86f)?.let { shortcut ->
+                        parseShortcutToolCall(shortcut)
+                    }
+                },
+                selfStateProvider = { SelfModel.toPromptLine(selfModel.capture()) },
+                memoryProvider = { query -> buildMemoryContext(mind, embedFn(query)) },
+                onEpisodeComplete = { userText, reply, toolCall, echoed ->
+                    _activeExpert.value = expertRouter.classify(userText).name
+                    val argsJson = toolCall?.let { JSONObject(it.args).toString() }
+                    mind.addEpisode(
+                        Episode(
+                            timestampMs = System.currentTimeMillis(),
+                            liveTranscript = lastLiveRaw,
+                            accurateTranscript = lastAccurateRaw,
+                            chosenTranscript = userText,
+                            reply = reply,
+                            toolName = toolCall?.name,
+                            toolArgsJson = argsJson,
+                            echoed = echoed,
+                            outcomeOk = !echoed,
+                        )
+                    )
+                    lastLiveRaw = ""
+                    lastAccurateRaw = ""
+                    serviceScope.launch(Dispatchers.IO) { publishMindState(mind, selfModel) }
+                },
+            )
+
+            val reflectionWorker = ReflectionWorker(
+                store = mind,
+                embed = embedFn,
+                hotwordsWriter = hotwordsWriter,
+                hotwordsOutFile = hotwordsFile,
+                llmExtract = if (activeLlm != null) {
+                    { batch ->
+                        if (activeLlm.isLoaded && _state.value == AssistantState.IDLE) {
+                            val extractPrompt = prompts.prompt(
+                                history = emptyList(),
+                                user = "Extract JSON {\"facts\":[],\"vocab\":[]} of durable personal facts and special names from:\n$batch",
+                            )
+                            val sb = StringBuilder()
+                            runCatching {
+                                activeLlm.generate(extractPrompt, null, maxTokens = 96) { piece ->
+                                    if (_state.value != AssistantState.IDLE) return@generate false
+                                    sb.append(piece)
+                                    true
+                                }
+                            }
+                            sb.toString()
+                        } else {
+                            null
+                        }
+                    }
+                } else {
+                    null
+                },
             )
 
             val mic = MicStream()
@@ -290,15 +454,16 @@ class JarvisService : Service() {
             val turnController = TurnController(
                 segmenter = SpeechSegmenter(
                     vad = turnVadInstance,
-                    trailingSilenceMs = 400,
-                    shortTrailingSilenceMs = 260,
-                    noSpeechTimeoutMs = 5000,
+                    trailingSilenceMs = 750,
+                    shortTrailingSilenceMs = 380,
+                    noSpeechTimeoutMs = 4500,
+                    minSpeechFrames = 3,
                 ),
                 live = live,
                 accurate = accurate,
                 brain = brain,
                 speaker = ttsSpeaker,
-                preferStreaming = true,
+                preferStreaming = false,
                 setState = { next ->
                     updateState(next)
                     updateNotification("Jarvis: ${next.name}")
@@ -311,7 +476,199 @@ class JarvisService : Service() {
                     android.util.Log.i("JarvisTurn", "SAID: \"$r\"")
                     _reply.value = r
                 },
+                arbiter = TranscriptArbiter(),
+                correctionsProvider = { mind.listActiveCorrectionsMap() },
+                onTranscriptionDetail = { liveRaw, accurateRaw, _ ->
+                    lastLiveRaw = liveRaw
+                    lastAccurateRaw = accurateRaw
+                },
+                onCorrectionConfirmed = { heard, meant ->
+                    mind.learnCorrection(heard, meant)
+                    mind.learnVocab(meant, source = "confirmed")
+                    if (regenerateHotwords(mind, hotwordsWriter, hotwordsFile) > 0) {
+                        runCatching { live.updateHotwords(hotwordsFile) }
+                    }
+                    serviceScope.launch(Dispatchers.IO) { publishMindState(mind, selfModel) }
+                },
+                onSpeechActivity = {
+                    lastInteractionMs = System.currentTimeMillis()
+                },
             )
+
+            MindUiBridge.actions = object : MindUiActions {
+                override fun undoJournal(id: Long) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        mind.undoJournalEntry(id)
+                        if (regenerateHotwords(mind, hotwordsWriter, hotwordsFile) > 0) {
+                            runCatching { live.updateHotwords(hotwordsFile) }
+                        }
+                        publishMindState(mind, selfModel)
+                    }
+                }
+
+                override fun deleteFact(id: Long) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        mind.deleteFact(id)
+                        publishMindState(mind, selfModel)
+                    }
+                }
+
+                override fun deleteVocab(id: Long) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        mind.deleteVocab(id)
+                        regenerateHotwords(mind, hotwordsWriter, hotwordsFile)
+                        runCatching { live.updateHotwords(hotwordsFile) }
+                        publishMindState(mind, selfModel)
+                    }
+                }
+
+                override fun deleteCorrection(id: Long) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        mind.deleteCorrection(id)
+                        regenerateHotwords(mind, hotwordsWriter, hotwordsFile)
+                        runCatching { live.updateHotwords(hotwordsFile) }
+                        publishMindState(mind, selfModel)
+                    }
+                }
+
+                override fun deleteShortcut(id: Long) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        mind.deleteShortcut(id)
+                        publishMindState(mind, selfModel)
+                    }
+                }
+
+                override fun activateVersion(id: Long) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        mind.activateModelVersion(id)
+                        publishMindState(mind, selfModel)
+                    }
+                }
+
+                override fun setLearningPaused(paused: Boolean) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        mind.setLearningPaused(paused)
+                        publishMindState(mind, selfModel)
+                    }
+                }
+
+                override fun exportJson() {
+                    serviceScope.launch(Dispatchers.IO) {
+                        val exportFile = File("/sdcard/Jarvis/mind-export.json")
+                        val ok = mind.exportToJson(exportFile)
+                        statusNotice = if (ok) {
+                            "Exported mind snapshot to ${exportFile.absolutePath}"
+                        } else {
+                            "Failed to export mind snapshot"
+                        }
+                        publishMindState(mind, selfModel)
+                    }
+                }
+
+                override fun triggerReflection() {
+                    serviceScope.launch(Dispatchers.IO) {
+                        SimdAudio.pinCurrentThreadToLittleCores()
+                        val report = reflectionWorker.reflectOnce(
+                            canRun = true,
+                            isInterrupted = { _state.value != AssistantState.IDLE },
+                        )
+                        if (report.vocabLearned > 0 || report.correctionsLearned > 0) {
+                            runCatching { live.updateHotwords(hotwordsFile) }
+                        }
+                        lastReflectionMs = System.currentTimeMillis()
+                        statusNotice = if (report.episodesProcessed == 0) {
+                            "No unreflected episodes to consolidate"
+                        } else {
+                            "Reflected ${report.episodesProcessed} turns (+${report.factsLearned} facts, +${report.vocabLearned} words, +${report.shortcutsPromoted} shortcuts)"
+                        }
+                        publishMindState(mind, selfModel)
+                    }
+                }
+
+                override fun refresh() {
+                    serviceScope.launch(Dispatchers.IO) {
+                        publishMindState(mind, selfModel)
+                    }
+                }
+            }
+
+            launch(Dispatchers.IO) { publishMindState(mind, selfModel) }
+
+            // Background idle reflection loop pinned to little cores (cpu0..3).
+            reflectionJob?.cancel()
+            reflectionJob = serviceScope.launch(Dispatchers.IO) {
+                SimdAudio.pinCurrentThreadToLittleCores()
+                while (isActive) {
+                    delay(60_000L)
+                    val snap = selfModel.capture()
+                    val idleMs = System.currentTimeMillis() - lastInteractionMs
+                    val canRun = _state.value == AssistantState.IDLE &&
+                        idleMs >= REFLECTION_IDLE_MS &&
+                        (snap.charging || snap.batteryPct > 50) &&
+                        healthGuard.level() == HealthGuard.Level.NORMAL
+                    if (canRun) {
+                        val report = reflectionWorker.reflectOnce(
+                            canRun = true,
+                            isInterrupted = { _state.value != AssistantState.IDLE },
+                        )
+                        if (report.episodesProcessed > 0) {
+                            lastReflectionMs = System.currentTimeMillis()
+                            if (report.vocabLearned > 0 || report.correctionsLearned > 0) {
+                                runCatching { live.updateHotwords(hotwordsFile) }
+                            }
+                            publishMindState(mind, selfModel)
+                        }
+                    }
+                }
+            }
+
+            // Background proactive initiative loop (due reminders, thermal/battery alerts, greetings, daily recap).
+            initiativeJob?.cancel()
+            initiativeJob = serviceScope.launch(Dispatchers.IO) {
+                SimdAudio.pinCurrentThreadToLittleCores()
+                while (isActive) {
+                    delay(30_000L)
+                    if (_state.value != AssistantState.IDLE || initiativeSpeaking.get()) {
+                        continue
+                    }
+                    val snap = selfModel.capture()
+                    val now = System.currentTimeMillis()
+                    val idleMs = now - lastInteractionMs
+                    val recentPresence = (now - latestMotionMs) in 0L..90_000L
+                    val cutoff = now - 24L * 3600_000L
+                    val learningsToday = mind.listJournal(100).count {
+                        !it.undone && it.createdAtMs >= cutoff && it.type in LEARNING_TYPES
+                    }
+                    val action = initiativeEngine.evaluate(
+                        InitiativeEngine.InitiativeInput(
+                            isIdle = _state.value == AssistantState.IDLE,
+                            snapshot = snap,
+                            idleMs = idleMs,
+                            recentPresenceEvent = recentPresence,
+                            newLearningsToday = learningsToday,
+                        )
+                    ) ?: continue
+
+                    if (initiativeSpeaking.compareAndSet(false, true)) {
+                        try {
+                            if (_state.value == AssistantState.IDLE) {
+                                updateState(AssistantState.LISTENING)
+                                updateState(AssistantState.THINKING)
+                                updateState(AssistantState.SPEAKING, action.spoken)
+                                _reply.value = action.spoken
+                                ttsSpeaker.clearStop()
+                                ttsSpeaker.speak(action.spoken)
+                                lastInteractionMs = System.currentTimeMillis()
+                            }
+                        } finally {
+                            mic.suppressFor(250L)
+                            updateState(AssistantState.IDLE)
+                            initiativeSpeaking.set(false)
+                            publishMindState(mind, selfModel)
+                        }
+                    }
+                }
+            }
 
             updateState(AssistantState.IDLE, startStatus)
 
@@ -332,8 +689,7 @@ class JarvisService : Service() {
                         diagFrames = 0; diagVadFrames = 0; diagMaxRms = 0f
                     }
 
-                    // Do not capture/process mic frames while speaking.
-                    if (_state.value == AssistantState.SPEAKING) {
+                    if (_state.value == AssistantState.SPEAKING || initiativeSpeaking.get()) {
                         return@collect
                     }
 
@@ -347,6 +703,7 @@ class JarvisService : Service() {
 
                     val woken = manualWakeRequested.getAndSet(false) || gatedWake.accept(frame)
                     if (woken) {
+                        lastInteractionMs = System.currentTimeMillis()
                         android.util.Log.i("JarvisWake", "WAKE detected")
                         if (healthGuard.shouldUnloadChatModel() && jniEngine.isLoaded) {
                             jniEngine.unload()
@@ -363,6 +720,9 @@ class JarvisService : Service() {
                         turnJob = launch {
                             try {
                                 turnController.runTurn(ch.receiveAsFlow())
+                                if (turnController.hasPendingConfirmation) {
+                                    manualWakeRequested.set(true)
+                                }
                             } finally {
                                 ch.close()
                                 mic.suppressFor(250L)
@@ -375,6 +735,103 @@ class JarvisService : Service() {
                 updateState(AssistantState.ERROR, t.message ?: "Microphone stream error")
             }
         }
+    }
+
+    private fun publishMindState(mind: SqliteMindStore, selfModel: SelfModel) {
+        runCatching {
+            val snap = selfModel.capture()
+            MindUiBridge.publish(
+                MindUiState(
+                    learningPaused = snap.learningPaused,
+                    journal = mind.listJournal(100).map {
+                        JournalItemUi(it.id, it.type, it.summary, it.createdAtMs, it.undone)
+                    },
+                    facts = mind.listActiveFacts(100).map {
+                        FactItemUi(it.id, it.text, it.confidence, it.createdAtMs)
+                    },
+                    vocab = mind.listActiveVocab().map {
+                        VocabItemUi(it.id, it.phrase, it.source)
+                    },
+                    corrections = mind.listActiveCorrections().map {
+                        CorrectionItemUi(it.id, it.id, it.heard, it.meant, it.hitCount)
+                    },
+                    shortcuts = mind.listActiveShortcuts().map {
+                        ShortcutItemUi(it.id, it.canonicalUtterance, it.toolName, it.argsJson, it.hitCount)
+                    },
+                    versions = mind.listModelVersions().map {
+                        BrainVersionUi(
+                            id = it.id,
+                            label = it.baseModel,
+                            adapterPath = it.adapterPath,
+                            evalScore = it.evalScore,
+                            echoRate = it.echoRate,
+                            toolAccuracy = it.toolAccuracy,
+                            active = it.active,
+                        )
+                    },
+                    resources = ResourceStatusUi(
+                        batteryPct = snap.batteryPct,
+                        charging = snap.charging,
+                        batteryTempC = snap.batteryTempC,
+                        maxCpuTempC = snap.maxCpuTempC,
+                        healthLevel = snap.healthLevelName,
+                        availRamMb = snap.availRamMb,
+                        totalRamMb = snap.totalRamMb,
+                        littleCpuMhz = snap.littleFreqMhz,
+                        bigCpuMhz = snap.bigFreqMhz,
+                        activeModel = snap.activeModel,
+                        activeExperts = snap.activeExperts,
+                        lux = snap.lux,
+                        nearProximity = snap.nearProximity,
+                        lastReflectionMs = snap.lastReflectionMs,
+                        episodeCount = snap.episodeCount,
+                        statusNotice = statusNotice,
+                    ),
+                )
+            )
+        }
+    }
+
+    private fun regenerateHotwords(
+        mind: SqliteMindStore,
+        writer: HotwordsWriter?,
+        outFile: File,
+    ): Int {
+        if (writer == null) return 0
+        val phrases = buildList {
+            addAll(mind.listActiveVocab().map { it.phrase })
+            addAll(mind.listActiveCorrections().map { it.meant })
+        }.distinct()
+        return writer.writeHotwords(phrases, outFile)
+    }
+
+    private fun parseShortcutToolCall(shortcut: LearnedShortcut): ToolCall? {
+        return runCatching {
+            val argsMap = LinkedHashMap<String, String>()
+            if (shortcut.argsJson.isNotBlank()) {
+                val obj = JSONObject(shortcut.argsJson)
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    argsMap[key] = obj.opt(key)?.toString() ?: ""
+                }
+            }
+            ToolCall(shortcut.toolName, argsMap)
+        }.getOrNull()
+    }
+
+    private fun buildMemoryContext(mind: SqliteMindStore, queryVec: FloatArray): String? {
+        val facts = mind.retrieveRelevantFacts(queryVec, topK = 2, minSim = 0.25f)
+        val ep = mind.retrieveRelevantEpisode(queryVec, minSim = 0.35f)
+        if (facts.isEmpty() && ep == null) return null
+        val parts = ArrayList<String>()
+        for (f in facts) {
+            parts.add(f.text)
+        }
+        if (ep != null && ep.reply.isNotBlank()) {
+            parts.add("Prev Q='${ep.chosenTranscript.take(60)}' A='${ep.reply.take(80)}'")
+        }
+        return parts.joinToString(" | ").take(240)
     }
 
     private fun computeRms(frame: FloatArray): Float {
@@ -439,6 +896,8 @@ class JarvisService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val WATCHDOG_REQ_CODE = 3001
         private const val WATCHDOG_INTERVAL_MS = 45_000L
+        private const val REFLECTION_IDLE_MS = 10L * 60_000L
+        private val LEARNING_TYPES = setOf("fact", "vocab", "correction", "shortcut")
 
         const val ACTION_STOP_SPEAKING = "com.jarvis.edge.action.STOP_SPEAKING"
         const val ACTION_MANUAL_WAKE = "com.jarvis.edge.action.MANUAL_WAKE"
@@ -449,6 +908,12 @@ class JarvisService : Service() {
 
         @Volatile
         var latestLux: Float = 100f
+
+        @Volatile
+        var latestNearProximity: Boolean = false
+
+        @Volatile
+        var latestMotionMs: Long = 0L
 
         private val _state = MutableStateFlow(AssistantState.IDLE)
         val state: StateFlow<AssistantState> = _state.asStateFlow()
@@ -464,6 +929,9 @@ class JarvisService : Service() {
 
         private val _micLevel = MutableStateFlow(0f)
         val micLevel: StateFlow<Float> = _micLevel.asStateFlow()
+
+        private val _activeExpert = MutableStateFlow("CONVERSATION")
+        val activeExpert: StateFlow<String> = _activeExpert.asStateFlow()
 
         private val _screenFillWhite = MutableStateFlow(false)
         val screenFillWhite: StateFlow<Boolean> = _screenFillWhite.asStateFlow()

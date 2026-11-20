@@ -39,6 +39,10 @@
             android:name=".hud.SetupActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".hud.MindActivity"
+            android:exported="false" />
+
         <service
             android:name=".service.JarvisService"
             android:enabled="true"
