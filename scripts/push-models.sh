@@ -21,9 +21,9 @@ if [ -z "${LLM_MODEL:-}" ] || [ ! -f "$SRC_DIR/llm/$LLM_MODEL" ]; then
   exit 1
 fi
 
-$ADB shell "mkdir -p $DEST_DIR/kws $DEST_DIR/vad $DEST_DIR/asr-moonshine $DEST_DIR/asr-zipformer $DEST_DIR/tts $DEST_DIR/llm $DEST_DIR/vlm"
+$ADB shell "mkdir -p $DEST_DIR/kws $DEST_DIR/vad $DEST_DIR/asr-moonshine $DEST_DIR/asr-zipformer $DEST_DIR/tts $DEST_DIR/vlm $DEST_DIR/embed $DEST_DIR/adapters $DEST_DIR/llm"
 
-for sub in kws vad asr-moonshine asr-zipformer tts vlm; do
+for sub in kws vad asr-moonshine asr-zipformer tts vlm embed; do
   if [ ! -d "$SRC_DIR/$sub" ] || [ -z "$(ls -A "$SRC_DIR/$sub" 2>/dev/null)" ]; then
     echo "ERROR: Missing or empty $SRC_DIR/$sub" >&2
     exit 1
@@ -31,6 +31,11 @@ for sub in kws vad asr-moonshine asr-zipformer tts vlm; do
   echo "Syncing $sub -> $DEST_DIR/$sub"
   $ADB push --sync "$SRC_DIR/$sub/." "$DEST_DIR/$sub/"
 done
+
+if [ -d "$SRC_DIR/adapters" ] && [ -n "$(ls -A "$SRC_DIR/adapters" 2>/dev/null)" ]; then
+  echo "Syncing adapters -> $DEST_DIR/adapters"
+  $ADB push --sync "$SRC_DIR/adapters/." "$DEST_DIR/adapters/"
+fi
 
 echo "Syncing llm/$LLM_MODEL -> $DEST_DIR/llm/$LLM_MODEL"
 $ADB push --sync "$SRC_DIR/llm/$LLM_MODEL" "$DEST_DIR/llm/$LLM_MODEL"
