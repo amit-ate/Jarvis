@@ -1,5 +1,8 @@
 #include "simd_audio.h"
 
+#include <sched.h>
+
+#include <algorithm>
 #include <cmath>
 #include <chrono>
 #include <vector>
@@ -173,4 +176,145 @@ Java_com_jarvis_edge_audio_SimdAudio_nativeBenchmark(
   jlong buf[2] = {scalar_ns, simd_ns};
   env->SetLongArrayRegion(res, 0, 2, buf);
   return res;
+}
+
+void simd_remove_dc_and_normalize(float * __restrict__ samples, int length, float target_peak, float max_gain) {
+  if (!samples || length <= 0) return;
+
+  double sum = 0.0;
+  int i = 0;
+
+#if defined(__ARM_NEON)
+  const int simd_len16 = length - (length % 16);
+  const int simd_len4 = length - (length % 4);
+  float32x4_t v_sum0 = vdupq_n_f32(0.0f);
+  float32x4_t v_sum1 = vdupq_n_f32(0.0f);
+  float32x4_t v_sum2 = vdupq_n_f32(0.0f);
+  float32x4_t v_sum3 = vdupq_n_f32(0.0f);
+  for (; i < simd_len16; i += 16) {
+    v_sum0 = vaddq_f32(v_sum0, vld1q_f32(samples + i));
+    v_sum1 = vaddq_f32(v_sum1, vld1q_f32(samples + i + 4));
+    v_sum2 = vaddq_f32(v_sum2, vld1q_f32(samples + i + 8));
+    v_sum3 = vaddq_f32(v_sum3, vld1q_f32(samples + i + 12));
+  }
+  for (; i < simd_len4; i += 4) {
+    v_sum0 = vaddq_f32(v_sum0, vld1q_f32(samples + i));
+  }
+  float32x4_t v_total = vaddq_f32(vaddq_f32(v_sum0, v_sum1),
+                                  vaddq_f32(v_sum2, v_sum3));
+  sum = static_cast<double>(vaddvq_f32(v_total));
+#endif
+
+  for (; i < length; ++i) {
+    sum += static_cast<double>(samples[i]);
+  }
+  const float mean = static_cast<float>(sum / static_cast<double>(length));
+
+  float peak = 0.0f;
+  i = 0;
+
+#if defined(__ARM_NEON)
+  const float32x4_t v_mean = vdupq_n_f32(mean);
+  float32x4_t v_peak0 = vdupq_n_f32(0.0f);
+  float32x4_t v_peak1 = vdupq_n_f32(0.0f);
+  float32x4_t v_peak2 = vdupq_n_f32(0.0f);
+  float32x4_t v_peak3 = vdupq_n_f32(0.0f);
+
+  for (; i < simd_len16; i += 16) {
+    float32x4_t f0 = vsubq_f32(vld1q_f32(samples + i), v_mean);
+    float32x4_t f1 = vsubq_f32(vld1q_f32(samples + i + 4), v_mean);
+    float32x4_t f2 = vsubq_f32(vld1q_f32(samples + i + 8), v_mean);
+    float32x4_t f3 = vsubq_f32(vld1q_f32(samples + i + 12), v_mean);
+
+    vst1q_f32(samples + i, f0);
+    vst1q_f32(samples + i + 4, f1);
+    vst1q_f32(samples + i + 8, f2);
+    vst1q_f32(samples + i + 12, f3);
+
+    v_peak0 = vmaxq_f32(v_peak0, vabsq_f32(f0));
+    v_peak1 = vmaxq_f32(v_peak1, vabsq_f32(f1));
+    v_peak2 = vmaxq_f32(v_peak2, vabsq_f32(f2));
+    v_peak3 = vmaxq_f32(v_peak3, vabsq_f32(f3));
+  }
+  for (; i < simd_len4; i += 4) {
+    float32x4_t f = vsubq_f32(vld1q_f32(samples + i), v_mean);
+    vst1q_f32(samples + i, f);
+    v_peak0 = vmaxq_f32(v_peak0, vabsq_f32(f));
+  }
+  float32x4_t v_peak_max = vmaxq_f32(vmaxq_f32(v_peak0, v_peak1),
+                                     vmaxq_f32(v_peak2, v_peak3));
+  peak = vmaxvq_f32(v_peak_max);
+#endif
+
+  for (; i < length; ++i) {
+    float f = samples[i] - mean;
+    samples[i] = f;
+    float a = std::fabs(f);
+    if (a > peak) peak = a;
+  }
+
+  if (peak > 0.005f) {
+    const float gain = std::min(target_peak / peak, max_gain);
+    i = 0;
+
+#if defined(__ARM_NEON)
+    const float32x4_t v_gain = vdupq_n_f32(gain);
+    const float32x4_t v_min = vdupq_n_f32(-1.0f);
+    const float32x4_t v_max = vdupq_n_f32(1.0f);
+
+    for (; i < simd_len16; i += 16) {
+      float32x4_t f0 = vmulq_f32(vld1q_f32(samples + i), v_gain);
+      float32x4_t f1 = vmulq_f32(vld1q_f32(samples + i + 4), v_gain);
+      float32x4_t f2 = vmulq_f32(vld1q_f32(samples + i + 8), v_gain);
+      float32x4_t f3 = vmulq_f32(vld1q_f32(samples + i + 12), v_gain);
+
+      f0 = vminq_f32(vmaxq_f32(f0, v_min), v_max);
+      f1 = vminq_f32(vmaxq_f32(f1, v_min), v_max);
+      f2 = vminq_f32(vmaxq_f32(f2, v_min), v_max);
+      f3 = vminq_f32(vmaxq_f32(f3, v_min), v_max);
+
+      vst1q_f32(samples + i, f0);
+      vst1q_f32(samples + i + 4, f1);
+      vst1q_f32(samples + i + 8, f2);
+      vst1q_f32(samples + i + 12, f3);
+    }
+    for (; i < simd_len4; i += 4) {
+      float32x4_t f = vmulq_f32(vld1q_f32(samples + i), v_gain);
+      f = vminq_f32(vmaxq_f32(f, v_min), v_max);
+      vst1q_f32(samples + i, f);
+    }
+#endif
+
+    for (; i < length; ++i) {
+      float f = samples[i] * gain;
+      if (f < -1.0f) f = -1.0f;
+      else if (f > 1.0f) f = 1.0f;
+      samples[i] = f;
+    }
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_jarvis_edge_audio_SimdAudio_nativeNormalizeUtterance(
+    JNIEnv *env, jclass, jfloatArray jSamples, jfloat targetPeak, jfloat maxGain) {
+  if (!jSamples) return;
+  const jsize length = env->GetArrayLength(jSamples);
+  if (length <= 0) return;
+
+  jfloat *samples = env->GetFloatArrayElements(jSamples, nullptr);
+  if (!samples) return;
+
+  simd_remove_dc_and_normalize(samples, static_cast<int>(length), targetPeak, maxGain);
+  env->ReleaseFloatArrayElements(jSamples, samples, 0);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_jarvis_edge_audio_SimdAudio_nativePinCurrentThreadToLittleCores(
+    JNIEnv *, jclass) {
+  cpu_set_t mask;
+  CPU_ZERO(&mask);
+  for (int cpu = 0; cpu <= 3; ++cpu) {
+    CPU_SET(cpu, &mask);
+  }
+  sched_setaffinity(0, sizeof(mask), &mask);
 }

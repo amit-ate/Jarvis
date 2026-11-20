@@ -68,9 +68,11 @@ class SherpaMoonshineTranscriber(
             onInitThread()
             threadPrepared = true
         }
+        val normalized = samples.copyOf()
+        SimdAudio.normalizeUtterance(normalized, targetPeak = 0.85f, maxGain = 4.0f)
         val stream = recognizer.createStream()
         return try {
-            stream.acceptWaveform(samples, 16_000)
+            stream.acceptWaveform(normalized, 16_000)
             recognizer.decode(stream)
             recognizer.getResult(stream).text.trim()
         } finally {
@@ -84,16 +86,25 @@ class SherpaMoonshineTranscriber(
 }
 
 class SherpaLiveTranscriber(
-    modelDir: File,
-    numThreads: Int = 4,
+    private val modelDir: File,
+    private val numThreads: Int = 4,
     private val onInitThread: () -> Unit = {},
+    hotwordsFile: File? = null,
+    private val hotwordsScore: Float = 2.0f,
 ) : LiveTranscriber {
 
-    private val recognizer: OnlineRecognizer
+    private val lock = Any()
+    private var recognizer: OnlineRecognizer
     private var stream: OnlineStream
     private var threadPrepared = false
+    private var released = false
 
     init {
+        recognizer = buildRecognizer(hotwordsFile)
+        stream = recognizer.createStream("")
+    }
+
+    private fun buildRecognizer(hotwordsFile: File?): OnlineRecognizer {
         val transducer = OnlineTransducerModelConfig(
             encoder = pickOnnx(modelDir, "encoder-epoch-99-avg-1").absolutePath,
             decoder = pickOnnx(modelDir, "decoder-epoch-99-avg-1").absolutePath,
@@ -112,6 +123,11 @@ class SherpaLiveTranscriber(
             rule2 = EndpointRule(true, 1.4f, 0.0f),
             rule3 = EndpointRule(false, 0.0f, 20.0f),
         )
+        val resolvedHotwords = if (hotwordsFile?.isFile == true && hotwordsFile.length() > 0L) {
+            hotwordsFile.absolutePath
+        } else {
+            ""
+        }
         val config = OnlineRecognizerConfig(
             featConfig = FeatureConfig(sampleRate = 16_000, featureDim = 80, dither = 0.0f),
             modelConfig = modelConfig,
@@ -119,39 +135,71 @@ class SherpaLiveTranscriber(
             enableEndpoint = false,
             decodingMethod = "modified_beam_search",
             maxActivePaths = 4,
+            hotwordsFile = resolvedHotwords,
+            hotwordsScore = hotwordsScore,
         )
-        recognizer = OnlineRecognizer(null, config)
-        stream = recognizer.createStream("")
+        return OnlineRecognizer(null, config)
+    }
+
+    fun updateHotwords(file: File) {
+        val newRecognizer = buildRecognizer(file)
+        val newStream = newRecognizer.createStream("")
+        synchronized(lock) {
+            if (released) {
+                runCatching { newStream.release() }
+                runCatching { newRecognizer.release() }
+                return
+            }
+            val oldStream = stream
+            val oldRecognizer = recognizer
+            recognizer = newRecognizer
+            stream = newStream
+            runCatching { oldStream.release() }
+            runCatching { oldRecognizer.release() }
+        }
     }
 
     override fun accept(frame: FloatArray): String {
-        if (!threadPrepared) {
-            onInitThread()
-            threadPrepared = true
+        synchronized(lock) {
+            if (released) return ""
+            if (!threadPrepared) {
+                onInitThread()
+                threadPrepared = true
+            }
+            stream.acceptWaveform(frame, 16_000)
+            while (recognizer.isReady(stream)) {
+                recognizer.decode(stream)
+            }
+            return recognizer.getResult(stream).text.trim()
         }
-        stream.acceptWaveform(frame, 16_000)
-        while (recognizer.isReady(stream)) {
-            recognizer.decode(stream)
-        }
-        return recognizer.getResult(stream).text.trim()
     }
 
     override fun finish(): String {
-        stream.inputFinished()
-        while (recognizer.isReady(stream)) {
-            recognizer.decode(stream)
+        synchronized(lock) {
+            if (released) return ""
+            stream.inputFinished()
+            while (recognizer.isReady(stream)) {
+                recognizer.decode(stream)
+            }
+            val text = recognizer.getResult(stream).text.trim()
+            recognizer.reset(stream)
+            return text
         }
-        val text = recognizer.getResult(stream).text.trim()
-        reset()
-        return text
     }
 
     override fun reset() {
-        recognizer.reset(stream)
+        synchronized(lock) {
+            if (released) return
+            recognizer.reset(stream)
+        }
     }
 
     fun release() {
-        stream.release()
-        recognizer.release()
+        synchronized(lock) {
+            if (released) return
+            released = true
+            runCatching { stream.release() }
+            runCatching { recognizer.release() }
+        }
     }
 }

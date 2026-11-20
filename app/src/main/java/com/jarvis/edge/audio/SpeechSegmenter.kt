@@ -57,6 +57,7 @@ class SpeechSegmenter(
     private val trailingSilenceMs: Int = 700,
     private val shortTrailingSilenceMs: Int = 450,
     private val noSpeechTimeoutMs: Int = 4000,
+    private val minSpeechFrames: Int = 1,
 ) {
     sealed interface Result {
         data object Pending : Result
@@ -74,6 +75,7 @@ class SpeechSegmenter(
     private val pendingSilence = ArrayList<FloatArray>()
     private var heardSpeech = false
     private var totalFrames = 0
+    private var speechFrameCount = 0
     private var consecutiveSilence = 0
     private var totalSampleCount = 0
 
@@ -83,10 +85,7 @@ class SpeechSegmenter(
 
         if (!heardSpeech) {
             if (!isSpeech) {
-                if (preSpeech.size >= PRE_SPEECH_FRAMES) {
-                    preSpeech.removeFirst()
-                }
-                preSpeech.addLast(frame.copyOf())
+                pushPreSpeech(frame.copyOf())
                 consecutiveSilence++
                 if (consecutiveSilence >= noSpeechFrames) {
                     reset()
@@ -95,6 +94,7 @@ class SpeechSegmenter(
                 return Result.Pending
             }
             heardSpeech = true
+            speechFrameCount = 1
             consecutiveSilence = 0
             while (preSpeech.isNotEmpty()) {
                 val pre = preSpeech.removeFirst()
@@ -116,6 +116,7 @@ class SpeechSegmenter(
             }
             pendingSilence.clear()
             consecutiveSilence = 0
+            speechFrameCount++
             speechBuffers.add(frame.copyOf())
             totalSampleCount += frame.size
             if (totalFrames >= maxFrames) {
@@ -128,6 +129,23 @@ class SpeechSegmenter(
         pendingSilence.add(frame.copyOf())
         val limit = if (shortTail) shortTrailingSilenceFrames else trailingSilenceFrames
         if (consecutiveSilence >= limit || totalFrames >= maxFrames) {
+            if (speechFrameCount < minSpeechFrames) {
+                if (totalFrames >= noSpeechFrames || totalFrames >= maxFrames) {
+                    reset()
+                    return Result.NoSpeech
+                }
+                heardSpeech = false
+                speechFrameCount = 0
+                speechBuffers.clear()
+                totalSampleCount = 0
+                val tailStart = maxOf(0, pendingSilence.size - PRE_SPEECH_FRAMES)
+                preSpeech.clear()
+                for (idx in tailStart until pendingSilence.size) {
+                    pushPreSpeech(pendingSilence[idx])
+                }
+                pendingSilence.clear()
+                return Result.Pending
+            }
             return finishDone()
         }
         return Result.Pending
@@ -139,9 +157,17 @@ class SpeechSegmenter(
         pendingSilence.clear()
         heardSpeech = false
         totalFrames = 0
+        speechFrameCount = 0
         consecutiveSilence = 0
         totalSampleCount = 0
         vad.reset()
+    }
+
+    private fun pushPreSpeech(frame: FloatArray) {
+        if (preSpeech.size >= PRE_SPEECH_FRAMES) {
+            preSpeech.removeFirst()
+        }
+        preSpeech.addLast(frame)
     }
 
     private fun finishDone(): Result.Done {

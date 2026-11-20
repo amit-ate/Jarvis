@@ -113,4 +113,69 @@ class SpeechSegmenterTest {
         assertEquals(49f, received[15])
         assertEquals(50f, received[16])
     }
+
+    @Test
+    fun `ignores brief click shorter than minSpeechFrames and captures subsequent speech`() {
+        // Frames 0..1: 2-frame click (< minSpeechFrames=3)
+        // Frames 2..23: 22 frames of trailing silence (700ms) -> resets click
+        // Frames 24..28: 5 frames of real speech
+        // Frames 29..50: 22 frames of trailing silence -> Done
+        val vad = ScriptedVad { idx ->
+            idx in 0..1 || idx in 24..28
+        }
+        val seg = SpeechSegmenter(vad, minSpeechFrames = 3)
+
+        var done: SpeechSegmenter.Result.Done? = null
+        for (i in 0..60) {
+            val res = seg.accept(FloatArray(512) { i.toFloat() })
+            if (res is SpeechSegmenter.Result.Done) {
+                done = res
+                break
+            }
+            assertFalse(res is SpeechSegmenter.Result.NoSpeech, "Unexpected NoSpeech at frame $i")
+        }
+
+        assertTrue(done != null, "Expected Done after real utterance")
+        // 16 pre-roll frames (indices 8..23) + 5 speech frames (indices 24..28) = 21 frames
+        assertEquals(21 * 512, done!!.samples.size)
+        assertEquals(8f, done.samples[0])
+        assertEquals(24f, done.samples[16 * 512])
+    }
+
+    @Test
+    fun `returns NoSpeech when only brief click occurs before timeout`() {
+        val vad = ScriptedVad { idx -> idx == 0 }
+        val seg = SpeechSegmenter(vad, minSpeechFrames = 3)
+        var gotNoSpeechAt = -1
+        for (i in 0..130) {
+            val res = seg.accept(frame())
+            assertFalse(res is SpeechSegmenter.Result.Done, "Click must not emit Done")
+            if (res is SpeechSegmenter.Result.NoSpeech) {
+                gotNoSpeechAt = i
+                break
+            }
+        }
+        assertEquals(125, gotNoSpeechAt)
+    }
+
+    @Test
+    fun `SimdAudio normalizeUtterance removes DC offset and normalizes peak in JVM`() {
+        // Quiet sine-like wave with +0.2 DC offset and +/-0.1 amplitude
+        val samples = FloatArray(64) { i ->
+            0.2f + if (i % 2 == 0) 0.1f else -0.1f
+        }
+        SimdAudio.normalizeUtterance(samples, targetPeak = 0.85f, maxGain = 4.0f)
+
+        // Mean should be ~0, peak should be min(0.85/0.1, 4.0) * 0.1 = 0.4
+        val mean = samples.average()
+        assertEquals(0.0, mean, 1e-4)
+        assertEquals(0.4f, samples[0], 1e-4f)
+        assertEquals(-0.4f, samples[1], 1e-4f)
+
+        // Sub-threshold noise (peak <= 0.005f) should have DC removed without amplification
+        val noise = FloatArray(16) { i -> 0.1f + if (i % 2 == 0) 0.002f else -0.002f }
+        SimdAudio.normalizeUtterance(noise)
+        assertEquals(0.002f, noise[0], 1e-4f)
+        assertEquals(-0.002f, noise[1], 1e-4f)
+    }
 }
