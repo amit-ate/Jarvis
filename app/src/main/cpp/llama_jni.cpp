@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -211,19 +212,39 @@ bool eval_token_range(llama_context *ctx,
   return true;
 }
 
+struct EmbedSession {
+  llama_model *model = nullptr;
+  llama_context *ctx = nullptr;
+  int32_t n_embd = 0;
+  std::mutex mu;
+};
+
+bool starts_with_prefix(const std::string &s, const char *prefix) {
+  const size_t plen = std::strlen(prefix);
+  return s.size() >= plen && s.compare(0, plen, prefix) == 0;
+}
+
 std::vector<llama_token> tokenize_text(const llama_vocab *vocab,
                                        const std::string &text,
                                        bool add_special, bool parse_special) {
+  bool effective_add_special = add_special;
+  if (effective_add_special &&
+      (starts_with_prefix(text, "<|im_start|>") ||
+       starts_with_prefix(text, "<|begin_of_text|>") ||
+       starts_with_prefix(text, "<bos>"))) {
+    effective_add_special = false;
+  }
   const int32_t approx = static_cast<int32_t>(text.size()) + 16;
   std::vector<llama_token> tokens(approx);
   int32_t n = llama_tokenize(
       vocab, text.c_str(), static_cast<int32_t>(text.size()), tokens.data(),
-      static_cast<int32_t>(tokens.size()), add_special, parse_special);
+      static_cast<int32_t>(tokens.size()), effective_add_special,
+      parse_special);
   if (n < 0) {
     tokens.resize(static_cast<size_t>(-n));
     n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()),
                        tokens.data(), static_cast<int32_t>(tokens.size()),
-                       add_special, parse_special);
+                       effective_add_special, parse_special);
   }
   if (n < 0)
     return {};
@@ -292,9 +313,11 @@ JNIEXPORT jlong JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLoad(
 }
 
 JNIEXPORT jlongArray JNICALL
-Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
+Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerateWithSampling(
     JNIEnv *env, jobject, jlong handle, jstring jPrompt, jstring jGrammar,
-    jint maxTokens, jobject callback) {
+    jint maxTokens, jfloat temperature, jfloat repeatPenalty,
+    jfloat freqPenalty, jfloat presencePenalty, jfloat minP, jfloat topP,
+    jint penalizeUserTokens, jobject callback) {
   auto *session = reinterpret_cast<LlmSession *>(handle);
   if (!session || !session->ctx || !session->model) {
     return env->NewLongArray(5);
@@ -319,7 +342,7 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
 
   const llama_vocab *vocab = llama_model_get_vocab(session->model);
   std::vector<llama_token> prompt_tokens =
-      tokenize_text(vocab, prompt_str, true, true);
+      tokenize_text(vocab, prompt_str, llama_vocab_get_add_bos(vocab), true);
   if (prompt_tokens.empty()) {
     return env->NewLongArray(5);
   }
@@ -391,8 +414,24 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
                           "Failed to parse GBNF grammar");
     }
   }
-  llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.3f));
-  llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.9f, 1));
+  llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
+  const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+  llama_sampler *pen = llama_sampler_init_penalties(
+      n_vocab, 64, repeatPenalty, freqPenalty, presencePenalty);
+  if (pen != nullptr) {
+    llama_sampler_chain_add(smpl, pen);
+    if (penalizeUserTokens > 0) {
+      const size_t n_pen = std::min<size_t>(
+          static_cast<size_t>(penalizeUserTokens), prompt_tokens.size());
+      const size_t start = prompt_tokens.size() - n_pen;
+      for (size_t i = start; i < prompt_tokens.size(); ++i) {
+        llama_sampler_accept(pen, prompt_tokens[i]);
+      }
+    }
+  }
+  llama_sampler_chain_add(smpl, llama_sampler_init_min_p(minP, 1));
+  llama_sampler_chain_add(smpl, llama_sampler_init_top_p(topP, 1));
+  llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
   llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
   jclass cb_cls = env->GetObjectClass(callback);
@@ -488,6 +527,124 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
   jlongArray out_arr = env->NewLongArray(5);
   env->SetLongArrayRegion(out_arr, 0, 5, stats);
   return out_arr;
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerate(
+    JNIEnv *env, jobject obj, jlong handle, jstring jPrompt, jstring jGrammar,
+    jint maxTokens, jobject callback) {
+  return Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerateWithSampling(
+      env, obj, handle, jPrompt, jGrammar, maxTokens, 0.45f, 1.18f, 0.15f,
+      0.10f, 0.05f, 0.90f, 0, callback);
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLoadLora(
+    JNIEnv *env, jobject, jlong handle, jstring jLoraPath) {
+  auto *session = reinterpret_cast<LlmSession *>(handle);
+  if (!session || !session->model || jLoraPath == nullptr) {
+    return 0;
+  }
+  const char *path_cstr = env->GetStringUTFChars(jLoraPath, nullptr);
+  if (!path_cstr) {
+    return 0;
+  }
+  std::string path_str(path_cstr);
+  env->ReleaseStringUTFChars(jLoraPath, path_cstr);
+
+  std::lock_guard<std::mutex> lock(session->mu);
+  llama_adapter_lora *adapter =
+      llama_adapter_lora_init(session->model, path_str.c_str());
+  if (!adapter) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                        "Failed to load LoRA adapter: %s", path_str.c_str());
+    return 0;
+  }
+  return reinterpret_cast<jlong>(adapter);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_jarvis_edge_brain_LlamaJniEngine_nativeSetLoraAdapters(
+    JNIEnv *env, jobject, jlong handle, jlongArray jLoraHandles,
+    jfloatArray jScales) {
+  auto *session = reinterpret_cast<LlmSession *>(handle);
+  if (!session || !session->ctx) {
+    return -1;
+  }
+  std::lock_guard<std::mutex> lock(session->mu);
+
+  std::vector<llama_adapter_lora *> adapters;
+  std::vector<float> scales;
+  if (jLoraHandles != nullptr) {
+    const jsize n = env->GetArrayLength(jLoraHandles);
+    if (n > 0) {
+      std::vector<jlong> raw_handles(static_cast<size_t>(n));
+      env->GetLongArrayRegion(jLoraHandles, 0, n, raw_handles.data());
+      std::vector<jfloat> raw_scales(static_cast<size_t>(n), 1.0f);
+      if (jScales != nullptr) {
+        const jsize ns = std::min(n, env->GetArrayLength(jScales));
+        if (ns > 0) {
+          env->GetFloatArrayRegion(jScales, 0, ns, raw_scales.data());
+        }
+      }
+      for (jsize i = 0; i < n; ++i) {
+        if (raw_handles[i] != 0) {
+          adapters.push_back(
+              reinterpret_cast<llama_adapter_lora *>(raw_handles[i]));
+          scales.push_back(raw_scales[i]);
+        }
+      }
+    }
+  }
+
+  const int32_t rc = llama_set_adapters_lora(
+      session->ctx, adapters.empty() ? nullptr : adapters.data(),
+      adapters.size(), scales.empty() ? nullptr : scales.data());
+  llama_memory_clear(llama_get_memory(session->ctx), true);
+  session->prev_tokens.clear();
+  return static_cast<jint>(rc);
+}
+
+JNIEXPORT void JNICALL
+Java_com_jarvis_edge_brain_LlamaJniEngine_nativeFreeLora(JNIEnv *, jobject,
+                                                         jlong loraHandle) {
+  auto *adapter = reinterpret_cast<llama_adapter_lora *>(loraHandle);
+  if (adapter != nullptr) {
+    llama_adapter_lora_free(adapter);
+  }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_jarvis_edge_brain_LlamaJniEngine_nativeApplyControlVector(
+    JNIEnv *env, jobject, jlong handle, jfloatArray jData, jint nEmbd,
+    jint ilStart, jint ilEnd) {
+  auto *session = reinterpret_cast<LlmSession *>(handle);
+  if (!session || !session->ctx) {
+    return -1;
+  }
+  std::lock_guard<std::mutex> lock(session->mu);
+
+  int32_t rc = 0;
+  if (jData == nullptr) {
+    rc = llama_set_adapter_cvec(session->ctx, nullptr, 0, 0, 0, 0);
+  } else {
+    const jsize len = env->GetArrayLength(jData);
+    std::vector<float> vec(static_cast<size_t>(len));
+    if (len > 0) {
+      env->GetFloatArrayRegion(jData, 0, len, vec.data());
+    }
+    int32_t embd = static_cast<int32_t>(nEmbd);
+    if (embd <= 0 && session->model != nullptr) {
+      embd = llama_model_n_embd(session->model);
+    }
+    rc = llama_set_adapter_cvec(
+        session->ctx, vec.empty() ? nullptr : vec.data(), vec.size(), embd,
+        static_cast<int32_t>(ilStart), static_cast<int32_t>(ilEnd));
+  }
+
+  llama_memory_clear(llama_get_memory(session->ctx), true);
+  session->prev_tokens.clear();
+  return static_cast<jint>(rc);
 }
 
 JNIEXPORT void JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeUnload(
@@ -669,6 +826,150 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeDescribeImage(
   llama_model_free(vlm_model);
   if (tp)
     ggml_threadpool_free(tp);
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_jarvis_edge_brain_LlamaEmbeddingEngine_nativeLoadEmbedder(
+    JNIEnv *env, jobject, jstring jModelPath) {
+  ensure_backend_init();
+
+  const char *path_cstr = env->GetStringUTFChars(jModelPath, nullptr);
+  if (!path_cstr)
+    return 0;
+  std::string path_str(path_cstr);
+  env->ReleaseStringUTFChars(jModelPath, path_cstr);
+
+  llama_model_params mparams = llama_model_default_params();
+  mparams.n_gpu_layers = 0;
+  mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
+
+  llama_model *model = llama_model_load_from_file(path_str.c_str(), mparams);
+  if (!model) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                        "Failed to load embedder model: %s", path_str.c_str());
+    return 0;
+  }
+
+  llama_context_params cparams = llama_context_default_params();
+  cparams.embeddings = true;
+  cparams.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+  cparams.n_ctx = 512;
+  cparams.n_batch = 512;
+  cparams.n_ubatch = 512;
+  cparams.n_threads = 2;
+  cparams.n_threads_batch = 2;
+  cparams.no_perf = true;
+
+  llama_context *ctx = llama_init_from_model(model, cparams);
+  if (!ctx) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                        "Failed to create embedder context for %s",
+                        path_str.c_str());
+    llama_model_free(model);
+    return 0;
+  }
+
+  auto *session = new EmbedSession();
+  session->model = model;
+  session->ctx = ctx;
+  session->n_embd = llama_model_n_embd(model);
+  return reinterpret_cast<jlong>(session);
+}
+
+JNIEXPORT jfloatArray JNICALL
+Java_com_jarvis_edge_brain_LlamaEmbeddingEngine_nativeEmbed(
+    JNIEnv *env, jobject, jlong embedHandle, jstring jText) {
+  auto *session = reinterpret_cast<EmbedSession *>(embedHandle);
+  if (!session || !session->ctx || !session->model || session->n_embd <= 0 ||
+      jText == nullptr) {
+    return env->NewFloatArray(0);
+  }
+
+  std::lock_guard<std::mutex> lock(session->mu);
+
+  const char *text_cstr = env->GetStringUTFChars(jText, nullptr);
+  std::string text = text_cstr ? text_cstr : "";
+  if (text_cstr)
+    env->ReleaseStringUTFChars(jText, text_cstr);
+
+  const llama_vocab *vocab = llama_model_get_vocab(session->model);
+  std::vector<llama_token> tokens =
+      tokenize_text(vocab, text, llama_vocab_get_add_bos(vocab), false);
+  if (tokens.empty()) {
+    return env->NewFloatArray(0);
+  }
+  if (tokens.size() > 512) {
+    tokens.resize(512);
+  }
+
+  llama_memory_clear(llama_get_memory(session->ctx), true);
+
+  llama_batch batch =
+      llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1);
+  batch.n_tokens = static_cast<int32_t>(tokens.size());
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    batch.token[i] = tokens[i];
+    batch.pos[i] = static_cast<llama_pos>(i);
+    batch.n_seq_id[i] = 1;
+    batch.seq_id[i][0] = 0;
+    batch.logits[i] = 1;
+  }
+
+  const int decode_rc = llama_decode(session->ctx, batch);
+  llama_batch_free(batch);
+  if (decode_rc != 0) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                        "Embedder llama_decode failed: %d", decode_rc);
+    return env->NewFloatArray(0);
+  }
+
+  const float *emb = nullptr;
+  if (llama_pooling_type(session->ctx) != LLAMA_POOLING_TYPE_NONE) {
+    emb = llama_get_embeddings_seq(session->ctx, 0);
+  }
+  if (!emb) {
+    emb = llama_get_embeddings_ith(session->ctx, -1);
+  }
+  if (!emb) {
+    return env->NewFloatArray(0);
+  }
+
+  std::vector<float> out(static_cast<size_t>(session->n_embd));
+  double norm_sq = 0.0;
+  for (int32_t i = 0; i < session->n_embd; ++i) {
+    out[i] = emb[i];
+    norm_sq += static_cast<double>(emb[i]) * static_cast<double>(emb[i]);
+  }
+  if (norm_sq > 1e-12) {
+    const float inv_norm = static_cast<float>(1.0 / std::sqrt(norm_sq));
+    for (int32_t i = 0; i < session->n_embd; ++i) {
+      out[i] *= inv_norm;
+    }
+  }
+
+  jfloatArray out_arr = env->NewFloatArray(session->n_embd);
+  env->SetFloatArrayRegion(out_arr, 0, session->n_embd, out.data());
+  return out_arr;
+}
+
+JNIEXPORT void JNICALL
+Java_com_jarvis_edge_brain_LlamaEmbeddingEngine_nativeUnloadEmbedder(
+    JNIEnv *, jobject, jlong embedHandle) {
+  auto *session = reinterpret_cast<EmbedSession *>(embedHandle);
+  if (!session)
+    return;
+  {
+    std::lock_guard<std::mutex> lock(session->mu);
+    if (session->ctx) {
+      llama_free(session->ctx);
+      session->ctx = nullptr;
+    }
+    if (session->model) {
+      llama_model_free(session->model);
+      session->model = nullptr;
+    }
+  }
+  delete session;
 }
 
 } // extern "C"

@@ -68,6 +68,32 @@ class PromptBuilderTest {
     }
 
     @Test
+    fun `gemma template starts with bos and formats turns`() {
+        val gemma = PromptBuilder(realisticTools, templateName = "gemma")
+        val p = gemma.prompt(emptyList(), "hello")
+        assertTrue(p.startsWith("<bos><start_of_turn>system\n"))
+        assertTrue("<start_of_turn>user\nhello<end_of_turn>\n" in p)
+        assertTrue(p.endsWith("<start_of_turn>model\n"))
+    }
+
+    @Test
+    fun `self state, memory, and rule inject right before current user turn preserving prefix`() {
+        val base = builder.prompt(emptyList(), "where is my key")
+        val enriched = builder.prompt(
+            history = emptyList(),
+            user = "where is my key",
+            selfStateLine = "calm",
+            memoryContext = "key is on the hook",
+            extraNudge = "Do NOT repeat.",
+        )
+        val prefixEnd = base.indexOf("where is my key")
+        assertEquals(base.substring(0, prefixEnd), enriched.substring(0, prefixEnd))
+        assertTrue("[Self: calm]" in enriched)
+        assertTrue("[Memory: key is on the hook]" in enriched)
+        assertTrue("[Rule: Do NOT repeat.]" in enriched)
+    }
+
+    @Test
     fun `grammar restricts tool names and enumerated argument values`() {
         val g = builder.grammar()
         assertTrue("\"torch\"" in g.replace("\\", ""))
