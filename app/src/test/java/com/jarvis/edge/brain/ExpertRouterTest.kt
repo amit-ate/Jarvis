@@ -1,6 +1,8 @@
 package com.jarvis.edge.brain
 
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -9,10 +11,18 @@ import java.nio.file.Path
 
 class ExpertRouterTest {
 
+    private data class CvecCall(
+        val data: FloatArray?,
+        val nEmbd: Int,
+        val ilStart: Int,
+        val ilEnd: Int,
+    )
+
     private class TrackingLlmEngine : LlmEngine {
         override var isLoaded: Boolean = true
         val loadedFiles = mutableListOf<String>()
         val activeCalls = mutableListOf<List<Pair<Long, Float>>>()
+        val cvecCalls = mutableListOf<CvecCall>()
         private var nextHandle = 100L
 
         override fun load(modelFile: File, contextTokens: Int) = Unit
@@ -27,6 +37,16 @@ class ExpertRouterTest {
 
         override fun setActiveLoraAdapters(adapters: List<Pair<Long, Float>>): Boolean {
             activeCalls.add(adapters)
+            return true
+        }
+
+        override fun applyControlVector(
+            data: FloatArray?,
+            nEmbd: Int,
+            ilStart: Int,
+            ilEnd: Int,
+        ): Boolean {
+            cvecCalls.add(CvecCall(data?.copyOf(), nEmbd, ilStart, ilEnd))
             return true
         }
     }
@@ -109,5 +129,117 @@ class ExpertRouterTest {
         val simSame = a1.indices.sumOf { (a1[it] * a2[it]).toDouble() }
         val simDiff = a1.indices.sumOf { (a1[it] * b[it]).toDouble() }
         assertTrue(simSame > simDiff)
+    }
+
+    @Test
+    fun `switches domain control vectors only on change and blends Stage 4 evolved vector`(@TempDir tempDir: Path) {
+        val dir = tempDir.toFile()
+        val toolVec = ControlVector(
+            nEmbd = 2,
+            nLayersMinus1 = 3,
+            ilStart = 1,
+            ilEnd = 2,
+            data = floatArrayOf(1f, 0f, 0f, 1f, 0f, 0f),
+        )
+        val convVec = ControlVector(
+            nEmbd = 2,
+            nLayersMinus1 = 3,
+            ilStart = 1,
+            ilEnd = 3,
+            data = floatArrayOf(0f, 2f, 2f, 0f, 1f, 1f),
+        )
+        ControlVectorCodec.write(File(dir, "tool_expert.jvec"), toolVec)
+        ControlVectorCodec.write(File(dir, "conversation_expert.jvec"), convVec)
+
+        val manifest = File(dir, "experts.json").apply {
+            writeText(
+                """
+                {
+                  "version": 1,
+                  "experts": [
+                    {
+                      "domain": "TOOL_USE",
+                      "cvec_path": "tool_expert.jvec",
+                      "cvec_scale": 0.4,
+                      "cvec_layer_start": 1,
+                      "cvec_layer_end": 2,
+                      "keywords": ["flashlight", "timer"]
+                    },
+                    {
+                      "domain": "CONVERSATION",
+                      "cvec_path": "conversation_expert.jvec",
+                      "cvec_scale": 0.5,
+                      "cvec_layer_start": 1,
+                      "cvec_layer_end": 3
+                    }
+                  ]
+                }
+                """.trimIndent(),
+            )
+        }
+
+        val router = ExpertRouter.fromManifestFile(manifest, dir)
+        val engine = TrackingLlmEngine()
+
+        assertEquals("TOOL_USE+cvec", router.activeExpertSummary(ExpertDomain.TOOL_USE))
+        assertEquals("REASONING", router.activeExpertSummary(ExpertDomain.REASONING))
+
+        // First TOOL_USE call applies scaled toolVec.
+        router.selectAndActivate("Turn on the flashlight", engine)
+        assertEquals(1, engine.cvecCalls.size)
+        assertArrayEquals(
+            floatArrayOf(0.4f, 0f, 0f, 0.4f, 0f, 0f),
+            engine.cvecCalls[0].data,
+            1e-5f,
+        )
+        assertEquals(2, engine.cvecCalls[0].nEmbd)
+        assertEquals(1, engine.cvecCalls[0].ilStart)
+        assertEquals(2, engine.cvecCalls[0].ilEnd)
+
+        // Repeated TOOL_USE call does not re-apply identical signature.
+        router.selectAndActivate("Set a timer", engine)
+        assertEquals(1, engine.cvecCalls.size)
+
+        // Switching to REASONING (no cvec) clears active control vector once.
+        router.selectAndActivate("Explain why the sky is blue", engine)
+        assertEquals(2, engine.cvecCalls.size)
+        assertNull(engine.cvecCalls[1].data)
+
+        // Repeating REASONING does not redundantly clear again.
+        router.selectAndActivate("Calculate 2 plus 2", engine)
+        assertEquals(2, engine.cvecCalls.size)
+
+        // Attach Stage 4 evolved control vector and route to CONVERSATION.
+        val evolved = ControlVector(
+            nEmbd = 2,
+            nLayersMinus1 = 3,
+            ilStart = 2,
+            ilEnd = 3,
+            data = floatArrayOf(0f, 0f, 1f, 1f, 2f, -2f),
+        )
+        router.setEvolvedControlVector(evolved, scale = 0.25f)
+        assertEquals("CONVERSATION+cvec+evolved", router.activeExpertSummary(ExpertDomain.CONVERSATION))
+
+        router.selectAndActivate("Hey there friend", engine)
+        assertEquals(3, engine.cvecCalls.size)
+        // 0.5 * convVec + 0.25 * evolved
+        assertArrayEquals(
+            floatArrayOf(0f, 1.0f, 1.25f, 0.25f, 1.0f, 0.0f),
+            engine.cvecCalls[2].data,
+            1e-5f,
+        )
+        assertEquals(1, engine.cvecCalls[2].ilStart)
+        assertEquals(3, engine.cvecCalls[2].ilEnd)
+
+        // Clearing evolved vector updates CONVERSATION back to domain-only cvec.
+        router.setEvolvedControlVector(null)
+        assertEquals("CONVERSATION+cvec", router.activeExpertSummary(ExpertDomain.CONVERSATION))
+        router.selectAndActivate("How are you today?", engine)
+        assertEquals(4, engine.cvecCalls.size)
+        assertArrayEquals(
+            floatArrayOf(0f, 1.0f, 1.0f, 0f, 0.5f, 0.5f),
+            engine.cvecCalls[3].data,
+            1e-5f,
+        )
     }
 }
