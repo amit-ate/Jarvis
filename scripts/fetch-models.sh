@@ -4,13 +4,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS_DIR="$ROOT_DIR/models"
 LLM_DIR="$MODELS_DIR/llm"
+EMBED_DIR="$MODELS_DIR/embed"
+ADAPTERS_DIR="$MODELS_DIR/adapters"
 KWS_DIR="$MODELS_DIR/kws"
 VAD_DIR="$MODELS_DIR/vad"
 MOONSHINE_DIR="$MODELS_DIR/asr-moonshine"
 ZIPFORMER_DIR="$MODELS_DIR/asr-zipformer"
 TTS_DIR="$MODELS_DIR/tts"
 VLM_DIR="$MODELS_DIR/vlm"
-mkdir -p "$LLM_DIR" "$KWS_DIR" "$VAD_DIR" "$MOONSHINE_DIR" "$ZIPFORMER_DIR" "$TTS_DIR" "$VLM_DIR"
+mkdir -p "$LLM_DIR" "$EMBED_DIR" "$ADAPTERS_DIR" "$KWS_DIR" "$VAD_DIR" "$MOONSHINE_DIR" "$ZIPFORMER_DIR" "$TTS_DIR" "$VLM_DIR"
 
 download_hf() {
   local repo="$1"
@@ -68,6 +70,15 @@ download_hf "Qwen/Qwen2.5-1.5B-Instruct-GGUF"       "qwen2.5-1.5b-instruct-q4_0.
 download_hf "Qwen/Qwen2.5-1.5B-Instruct-GGUF"       "qwen2.5-1.5b-instruct-q4_k_m.gguf" "$LLM_DIR"
 download_hf "unsloth/Qwen3-1.7B-GGUF"               "Qwen3-1.7B-Q4_0.gguf"              "$LLM_DIR"
 download_hf "unsloth/Qwen3-1.7B-GGUF"               "Qwen3-1.7B-Q4_K_M.gguf"            "$LLM_DIR"
+
+# Phase 2 Sub-1B Bake-Off Candidates
+download_hf "unsloth/Qwen3-0.6B-GGUF"               "Qwen3-0.6B-Q4_0.gguf"              "$LLM_DIR"
+download_hf "LiquidAI/LFM2-700M-GGUF"               "LFM2-700M-Q4_0.gguf"               "$LLM_DIR"
+download_hf "LiquidAI/LFM2-350M-GGUF"               "LFM2-350M-Q4_0.gguf"               "$LLM_DIR"
+download_hf "unsloth/gemma-3-270m-it-GGUF"          "gemma-3-270m-it-Q4_0.gguf"         "$LLM_DIR"
+
+# Neural Sentence Embedding Model (384-d)
+download_hf "second-state/All-MiniLM-L6-v2-Embedding-GGUF" "all-MiniLM-L6-v2-Q8_0.gguf" "$EMBED_DIR"
 
 echo "=== LLM Candidates Downloaded ==="
 ls -lh "$LLM_DIR"

@@ -280,3 +280,29 @@ Each instrumentation run was preceded by `am force-stop com.jarvis.edge`. Withou
   - Average Match Latency: **`2.41 µs per query`** (`415,446 queries/sec`).
   - All 52 JVM tests pass cleanly (`./gradlew testDebugUnitTest`).
 
+## Phase 2 Sub-1B Bake-Off & Neural Embedder Results
+
+### Neural Sentence Embedder (`all-MiniLM-L6-v2-Q8_0.gguf`)
+- **Artifact:** `/sdcard/Jarvis/models/embed/all-MiniLM-L6-v2-Q8_0.gguf` (pushed to `<serial>`)
+- **File Size:** `23.85 MB` (`25,008,064` bytes)
+- **GGUF Geometry:** Architecture `bert` (`all-MiniLM-L6-v2`), GGUF `v3`, `384`-d embeddings (`Embedding Dim: 384`), `6` layers (`Blocks / Layers: 6`), `12` attention/KV heads, `512` context length, `30,522` vocab size, `101` tensors (`63` F32, `1` F16, `37` Q8_0), `24` metadata entries
+- **Runtime RAM Estimate (`ctx=2048`):** `89.85 MB` (`23.85 MB` weights mmap + `18.00 MB` F16 KV cache + `48.00 MB` compute scratch; `2.6%` of `3506 MB` `MemAvailable`)
+
+### Stage 1 Sub-1B LLM Bake-Off (`<serial>`, `llama-bench-armv8a`, `taskset f0`, `-t 4 --poll 0 --no-warmup -r 1 --delay 5 -p 256 -n 64 -o md`)
+
+| Candidate GGUF | Params | Size | pp256 (t/s) | tg64 (t/s) | Battery Temp | Speed Gate (`pp256 >= 25.0 && tg64 >= 7.0`) |
+| :--- | ---: | ---: | ---: | ---: | :--- | :--- |
+| `qwen2.5-0.5b-instruct-q4_0.gguf` (baseline) | 630.17 M | 403.20 MiB | 33.58 | 3.76* | 33.0°C -> 34.0°C | PASS cool (`34.09 / 18.04`), THROTTLED here (`tg64 = 3.76`) |
+| `Qwen3-0.6B-Q4_0.gguf` | 596.05 M | 358.78 MiB | 26.77 | 15.08 | 34.0°C -> 34.0°C | **PASS** |
+| `LFM2-700M-Q4_0.gguf` | 742.49 M | 423.37 MiB | 20.14 | 5.10 | 34.0°C -> 34.0°C | **FAIL** (`pp256 < 25.0`, `tg64 < 7.0`) |
+| `LFM2-350M-Q4_0.gguf` | 354.48 M | 206.87 MiB | 43.11 | 25.83 | 34.0°C -> 34.0°C | **PASS** |
+| `gemma-3-270m-it-Q4_0.gguf` | 268.10 M | 224.16 MiB | 104.03 | 26.44 | 34.0°C -> 34.0°C | **PASS** |
+
+\* `qwen2.5-0.5b-instruct-q4_0.gguf` hit mid-`tg64` die thermal throttling (`VIRTUAL-CLUSTER1` `60°C`) during back-to-back `pp256 -> tg64` in this sweep (matching the behavior documented in the Thermal Soak section above, where cool/`--delay 5` runs achieved `33.86–34.09 t/s` pp256 and `17.49–18.04 t/s` tg64).
+
+- **Bake-Off Summary & Recommendation:**
+  - `LFM2-700M-Q4_0.gguf` fails both speed gates (`20.14` pp256, `5.10` tg64) and is disqualified.
+  - `Qwen3-0.6B-Q4_0.gguf` (`358.78 MiB`, `596.05 M`) is the strongest **new** sub-1B candidate passing both gates (`pp256 = 26.77 t/s`, `tg64 = 15.08 t/s`, zero throttling), while `LFM2-350M-Q4_0.gguf` (`43.11 / 25.83 t/s`) and `gemma-3-270m-it-Q4_0.gguf` (`104.03 / 26.44 t/s`) offer ultra-fast fallback tiers.
+  - Note: Existing Phase 2 `.jvec` control-vector experts are extracted for `qwen2.5-0.5b-instruct-q4_0.gguf` (`n_embd=896`, `24` layers); adopting `Qwen3-0.6B-Q4_0.gguf` as default `LLM_MODEL` would require re-extracting `.jvec` experts for Qwen3-0.6B geometry and verifying quality/tool-calling in Stage 2 eval.
+
+
