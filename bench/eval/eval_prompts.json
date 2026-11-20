@@ -1,0 +1,542 @@
+[
+  {
+    "id": "fqa_01",
+    "category": "factual_qa",
+    "prompt": "What is the capital of Japan?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["tokyo"],
+    "forbid_echo": true
+  },
+  {
+    "id": "fqa_02",
+    "category": "factual_qa",
+    "prompt": "How many planets are in our solar system?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["eight", "8"],
+    "forbid_echo": true
+  },
+  {
+    "id": "fqa_03",
+    "category": "factual_qa",
+    "prompt": "What is the chemical symbol for water?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["h2o"],
+    "forbid_echo": true
+  },
+  {
+    "id": "fqa_04",
+    "category": "factual_qa",
+    "prompt": "Who wrote Romeo and Juliet?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["shakespeare"],
+    "forbid_echo": true
+  },
+  {
+    "id": "fqa_05",
+    "category": "factual_qa",
+    "prompt": "What gas do plants primarily absorb for photosynthesis?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["carbon dioxide", "co2"],
+    "forbid_echo": true
+  },
+  {
+    "id": "fqa_06",
+    "category": "factual_qa",
+    "prompt": "At what temperature in Celsius does pure water freeze at sea level?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["zero", "0"],
+    "forbid_echo": true
+  },
+  {
+    "id": "fqa_07",
+    "category": "factual_qa",
+    "prompt": "Which ocean is the largest on Earth?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["pacific"],
+    "forbid_echo": true
+  },
+  {
+    "id": "fqa_08",
+    "category": "factual_qa",
+    "prompt": "How many degrees are in a right angle?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["90", "ninety"],
+    "forbid_echo": true
+  },
+  {
+    "id": "fqa_09",
+    "category": "factual_qa",
+    "prompt": "What is the hardest naturally occurring mineral?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["diamond"],
+    "forbid_echo": true
+  },
+  {
+    "id": "fqa_10",
+    "category": "factual_qa",
+    "prompt": "Which planet is closest to the Sun?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["mercury"],
+    "forbid_echo": true
+  },
+  {
+    "id": "echo_01",
+    "category": "echo_traps",
+    "prompt": "My favorite color is blue.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["nice", "great", "good", "choice", "noted", "blue", "cool"],
+    "forbid_echo": true
+  },
+  {
+    "id": "echo_02",
+    "category": "echo_traps",
+    "prompt": "I just got back from a long walk outside.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["glad", "hope", "good", "nice", "rest", "water", "refreshing"],
+    "forbid_echo": true
+  },
+  {
+    "id": "echo_03",
+    "category": "echo_traps",
+    "prompt": "The coffee machine is making a strange humming noise.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["check", "clean", "descaling", "unplug", "pump", "filter"],
+    "forbid_echo": true
+  },
+  {
+    "id": "echo_04",
+    "category": "echo_traps",
+    "prompt": "I am feeling a little tired today.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["rest", "break", "sleep", "water", "sorry", "take it easy"],
+    "forbid_echo": true
+  },
+  {
+    "id": "echo_05",
+    "category": "echo_traps",
+    "prompt": "Testing one two three, can you hear me?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["yes", "hear", "loud", "clear", "listening", "ready"],
+    "forbid_echo": true
+  },
+  {
+    "id": "echo_06",
+    "category": "echo_traps",
+    "prompt": "I bought two apples and three bananas.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["five", "5", "fruit", "snack", "healthy", "sounds good"],
+    "forbid_echo": true
+  },
+  {
+    "id": "echo_07",
+    "category": "echo_traps",
+    "prompt": "My desk lamp just flickered twice.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["bulb", "plug", "switch", "loose", "power", "check"],
+    "forbid_echo": true
+  },
+  {
+    "id": "echo_08",
+    "category": "echo_traps",
+    "prompt": "Jarvis, I have a dentist appointment on Friday morning.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["remind", "good luck", "noted", "schedule", "friday", "set"],
+    "forbid_echo": true
+  },
+  {
+    "id": "echo_09",
+    "category": "echo_traps",
+    "prompt": "It is raining pretty hard outside my window.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["umbrella", "dry", "indoors", "cozy", "stay", "weather"],
+    "forbid_echo": true
+  },
+  {
+    "id": "echo_10",
+    "category": "echo_traps",
+    "prompt": "The wifi router blinked red for a second.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["connection", "restart", "reboot", "network", "signal", "check"],
+    "forbid_echo": true
+  },
+  {
+    "id": "tool_01",
+    "category": "tool_calls",
+    "prompt": "Set a timer for 5 minutes.",
+    "expected_type": "tool",
+    "expected_tool": "set_timer",
+    "expected_keywords": ["5", "minutes"],
+    "forbid_echo": true
+  },
+  {
+    "id": "tool_02",
+    "category": "tool_calls",
+    "prompt": "Turn on the flashlight.",
+    "expected_type": "tool",
+    "expected_tool": "torch",
+    "expected_keywords": ["on"],
+    "forbid_echo": true
+  },
+  {
+    "id": "tool_03",
+    "category": "tool_calls",
+    "prompt": "Set the volume to 60 percent.",
+    "expected_type": "tool",
+    "expected_tool": "set_volume",
+    "expected_keywords": ["60"],
+    "forbid_echo": true
+  },
+  {
+    "id": "tool_04",
+    "category": "tool_calls",
+    "prompt": "Set screen brightness to 40 percent.",
+    "expected_type": "tool",
+    "expected_tool": "set_brightness",
+    "expected_keywords": ["40"],
+    "forbid_echo": true
+  },
+  {
+    "id": "tool_05",
+    "category": "tool_calls",
+    "prompt": "What time is it right now?",
+    "expected_type": "tool",
+    "expected_tool": "get_time",
+    "expected_keywords": ["time"],
+    "forbid_echo": true
+  },
+  {
+    "id": "tool_06",
+    "category": "tool_calls",
+    "prompt": "What is today's date?",
+    "expected_type": "tool",
+    "expected_tool": "get_date",
+    "expected_keywords": ["date"],
+    "forbid_echo": true
+  },
+  {
+    "id": "tool_07",
+    "category": "tool_calls",
+    "prompt": "Set an alarm for 7:30 am.",
+    "expected_type": "tool",
+    "expected_tool": "set_alarm",
+    "expected_keywords": ["7", "30"],
+    "forbid_echo": true
+  },
+  {
+    "id": "tool_08",
+    "category": "tool_calls",
+    "prompt": "Turn off the TV.",
+    "expected_type": "tool",
+    "expected_tool": "ir_send",
+    "expected_keywords": ["tv", "power"],
+    "forbid_echo": true
+  },
+  {
+    "id": "tool_09",
+    "category": "tool_calls",
+    "prompt": "What is the weather in Tokyo?",
+    "expected_type": "tool",
+    "expected_tool": "get_weather",
+    "expected_keywords": ["tokyo"],
+    "forbid_echo": true
+  },
+  {
+    "id": "tool_10",
+    "category": "tool_calls",
+    "prompt": "Cancel all my timers.",
+    "expected_type": "tool",
+    "expected_tool": "cancel_timers",
+    "expected_keywords": ["cancel", "timer"],
+    "forbid_echo": true
+  },
+  {
+    "id": "chat_01",
+    "category": "chit_chat_reasoning",
+    "prompt": "Hello Jarvis, how are you doing?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["good", "well", "ready", "help", "great", "doing"],
+    "forbid_echo": true
+  },
+  {
+    "id": "chat_02",
+    "category": "chit_chat_reasoning",
+    "prompt": "Tell me a short science joke.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["atom", "make up", "because", "electron", "quark", "gravity", "light"],
+    "forbid_echo": true
+  },
+  {
+    "id": "chat_03",
+    "category": "chit_chat_reasoning",
+    "prompt": "What is 17 multiplied by 4?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["68", "sixty-eight"],
+    "forbid_echo": true
+  },
+  {
+    "id": "chat_04",
+    "category": "chit_chat_reasoning",
+    "prompt": "If a train travels 60 kilometers per hour, how far does it go in 2.5 hours?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["150"],
+    "forbid_echo": true
+  },
+  {
+    "id": "chat_05",
+    "category": "chit_chat_reasoning",
+    "prompt": "Which is heavier: a kilogram of steel or a kilogram of feathers?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["same", "equal", "neither", "both"],
+    "forbid_echo": true
+  },
+  {
+    "id": "chat_06",
+    "category": "chit_chat_reasoning",
+    "prompt": "Why does ice float on liquid water?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["dense", "density", "expand", "hydrogen"],
+    "forbid_echo": true
+  },
+  {
+    "id": "chat_07",
+    "category": "chit_chat_reasoning",
+    "prompt": "Compare RAM and storage in one short sentence.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["ram", "temporary", "fast", "storage", "permanent"],
+    "forbid_echo": true
+  },
+  {
+    "id": "chat_08",
+    "category": "chit_chat_reasoning",
+    "prompt": "Give me two quick tips to stay focused while studying.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["break", "distraction", "timer", "phone", "focus", "goal"],
+    "forbid_echo": true
+  },
+  {
+    "id": "chat_09",
+    "category": "chit_chat_reasoning",
+    "prompt": "If Alice is older than Bob and Bob is older than Charlie, who is the youngest?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["charlie"],
+    "forbid_echo": true
+  },
+  {
+    "id": "chat_10",
+    "category": "chit_chat_reasoning",
+    "prompt": "Good night Jarvis.",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["good night", "sleep", "rest", "tomorrow", "night"],
+    "forbid_echo": true
+  },
+  {
+    "id": "mem_01",
+    "category": "self_awareness_memory",
+    "prompt": "Remember that my bike lock code is 4812.",
+    "expected_type": "tool",
+    "expected_tool": "remember",
+    "expected_keywords": ["bike", "4812"],
+    "forbid_echo": true
+  },
+  {
+    "id": "mem_02",
+    "category": "self_awareness_memory",
+    "prompt": "What do you remember about my bike lock code?",
+    "expected_type": "tool",
+    "expected_tool": "recall",
+    "expected_keywords": ["bike", "lock"],
+    "forbid_echo": true
+  },
+  {
+    "id": "mem_03",
+    "category": "self_awareness_memory",
+    "prompt": "Check your battery level and temperature.",
+    "expected_type": "tool",
+    "expected_tool": "battery_status",
+    "expected_keywords": ["battery"],
+    "forbid_echo": true
+  },
+  {
+    "id": "mem_04",
+    "category": "self_awareness_memory",
+    "prompt": "How bright is the room right now?",
+    "expected_type": "tool",
+    "expected_tool": "light_level",
+    "expected_keywords": ["light", "lux"],
+    "forbid_echo": true
+  },
+  {
+    "id": "mem_05",
+    "category": "self_awareness_memory",
+    "prompt": "What did you learn today?",
+    "expected_type": "tool",
+    "expected_tool": "mind_status",
+    "expected_keywords": ["learned_today", "learned"],
+    "forbid_echo": true
+  },
+  {
+    "id": "mem_06",
+    "category": "self_awareness_memory",
+    "prompt": "What do you know about me?",
+    "expected_type": "tool",
+    "expected_tool": "mind_status",
+    "expected_keywords": ["know_about_me", "know"],
+    "forbid_echo": true
+  },
+  {
+    "id": "mem_07",
+    "category": "self_awareness_memory",
+    "prompt": "Remind me in 15 minutes to stretch.",
+    "expected_type": "tool",
+    "expected_tool": "remind",
+    "expected_keywords": ["15", "stretch"],
+    "forbid_echo": true
+  },
+  {
+    "id": "mem_08",
+    "category": "self_awareness_memory",
+    "prompt": "Report your self status and hardware health.",
+    "expected_type": "tool",
+    "expected_tool": "mind_status",
+    "expected_keywords": ["self_status", "status"],
+    "forbid_echo": true
+  },
+  {
+    "id": "mem_09",
+    "category": "self_awareness_memory",
+    "prompt": "Save a note that the spare key is in the blue drawer.",
+    "expected_type": "tool",
+    "expected_tool": "remember",
+    "expected_keywords": ["spare", "key", "drawer"],
+    "forbid_echo": true
+  },
+  {
+    "id": "mem_10",
+    "category": "self_awareness_memory",
+    "prompt": "Who are you and what device are you running on?",
+    "expected_type": "say",
+    "expected_tool": null,
+    "expected_keywords": ["jarvis", "assistant", "offline", "device", "redmi", "android"],
+    "forbid_echo": true
+  },
+  {
+    "id": "uwf_01",
+    "category": "unknown_web_fallback",
+    "prompt": "Who won the most recent Nobel Prize in Physics?",
+    "expected_type": "tool",
+    "expected_tool": "web_search",
+    "expected_keywords": ["nobel", "physics"],
+    "forbid_echo": true
+  },
+  {
+    "id": "uwf_02",
+    "category": "unknown_web_fallback",
+    "prompt": "Search the web for the current population of Reykjavik.",
+    "expected_type": "tool",
+    "expected_tool": "web_search",
+    "expected_keywords": ["reykjavik", "population"],
+    "forbid_echo": true
+  },
+  {
+    "id": "uwf_03",
+    "category": "unknown_web_fallback",
+    "prompt": "Who is the current Prime Minister of New Zealand?",
+    "expected_type": "tool",
+    "expected_tool": "web_search",
+    "expected_keywords": ["prime minister", "new zealand"],
+    "forbid_echo": true
+  },
+  {
+    "id": "uwf_04",
+    "category": "unknown_web_fallback",
+    "prompt": "Look up the release date of the latest Linux LTS kernel.",
+    "expected_type": "tool",
+    "expected_tool": "web_search",
+    "expected_keywords": ["linux", "lts", "kernel"],
+    "forbid_echo": true
+  },
+  {
+    "id": "uwf_05",
+    "category": "unknown_web_fallback",
+    "prompt": "Find online what the James Webb Space Telescope observed this month.",
+    "expected_type": "tool",
+    "expected_tool": "web_search",
+    "expected_keywords": ["james webb", "telescope"],
+    "forbid_echo": true
+  },
+  {
+    "id": "uwf_06",
+    "category": "unknown_web_fallback",
+    "prompt": "Search Wikipedia for the Antikythera mechanism.",
+    "expected_type": "tool",
+    "expected_tool": "web_search",
+    "expected_keywords": ["antikythera"],
+    "forbid_echo": true
+  },
+  {
+    "id": "uwf_07",
+    "category": "unknown_web_fallback",
+    "prompt": "What is the current USD to INR exchange rate?",
+    "expected_type": "tool",
+    "expected_tool": "web_search",
+    "expected_keywords": ["usd", "inr", "exchange"],
+    "forbid_echo": true
+  },
+  {
+    "id": "uwf_08",
+    "category": "unknown_web_fallback",
+    "prompt": "Tell me about the Voyager Golden Record.",
+    "expected_type": "tool",
+    "expected_tool": "web_search",
+    "expected_keywords": ["voyager", "golden record"],
+    "forbid_echo": true
+  },
+  {
+    "id": "uwf_09",
+    "category": "unknown_web_fallback",
+    "prompt": "Who is the CEO of Anthropic right now?",
+    "expected_type": "tool",
+    "expected_tool": "web_search",
+    "expected_keywords": ["ceo", "anthropic"],
+    "forbid_echo": true
+  },
+  {
+    "id": "uwf_10",
+    "category": "unknown_web_fallback",
+    "prompt": "Look up the elevation of Mount Kilimanjaro.",
+    "expected_type": "tool",
+    "expected_tool": "web_search",
+    "expected_keywords": ["kilimanjaro", "elevation"],
+    "forbid_echo": true
+  }
+]
