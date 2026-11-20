@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "ggml.h"
 #include "llama.h"
@@ -250,6 +251,43 @@ std::vector<llama_token> tokenize_text(const llama_vocab *vocab,
     return {};
   tokens.resize(static_cast<size_t>(n));
   return tokens;
+}
+
+struct CvecCaptureState {
+  int32_t n_embd = 0;
+  int32_t n_layer = 0;
+  int64_t expected_tokens = 0;
+  std::vector<float> *accum = nullptr;
+  float sign = 1.0f;
+  std::vector<float> scratch;
+};
+
+bool cvec_capture_cb(struct ggml_tensor *t, bool ask, void *user_data) {
+  if (ask) {
+    return t && std::strncmp(t->name, "l_out-", 6) == 0;
+  }
+  auto *capture = static_cast<CvecCaptureState *>(user_data);
+  if (!capture || !capture->accum || !t ||
+      std::strncmp(t->name, "l_out-", 6) != 0) {
+    return true;
+  }
+  const int il = std::atoi(t->name + 6);
+  if (il >= 1 && il < capture->n_layer && t->type == GGML_TYPE_F32 &&
+      t->ne[0] == capture->n_embd && t->ne[1] == capture->expected_tokens &&
+      capture->expected_tokens > 0) {
+    const size_t embd_sz = static_cast<size_t>(capture->n_embd);
+    capture->scratch.resize(embd_sz);
+    const size_t offset_bytes =
+        static_cast<size_t>(t->ne[1] - 1) * embd_sz * sizeof(float);
+    ggml_backend_tensor_get(t, capture->scratch.data(), offset_bytes,
+                            embd_sz * sizeof(float));
+    float *dst = capture->accum->data() + static_cast<size_t>(il - 1) * embd_sz;
+    const float s = capture->sign;
+    for (int32_t d = 0; d < capture->n_embd; ++d) {
+      dst[d] += s * capture->scratch[static_cast<size_t>(d)];
+    }
+  }
+  return true;
 }
 
 } // namespace
@@ -645,6 +683,203 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeApplyControlVector(
   llama_memory_clear(llama_get_memory(session->ctx), true);
   session->prev_tokens.clear();
   return static_cast<jint>(rc);
+}
+
+JNIEXPORT jintArray JNICALL
+Java_com_jarvis_edge_brain_LlamaJniEngine_nativeModelInfo(JNIEnv *env, jobject,
+                                                          jlong handle) {
+  auto *session = reinterpret_cast<LlmSession *>(handle);
+  jint info[2] = {0, 0};
+  if (session && session->model) {
+    std::lock_guard<std::mutex> lock(session->mu);
+    if (session->model) {
+      info[0] = static_cast<jint>(llama_model_n_embd(session->model));
+      info[1] = static_cast<jint>(llama_model_n_layer(session->model));
+    }
+  }
+  jintArray out = env->NewIntArray(2);
+  if (out) {
+    env->SetIntArrayRegion(out, 0, 2, info);
+  }
+  return out;
+}
+
+JNIEXPORT jfloatArray JNICALL
+Java_com_jarvis_edge_brain_LlamaJniEngine_nativeTrainControlVector(
+    JNIEnv *env, jobject, jlong handle, jobjectArray jPosPrompts,
+    jobjectArray jNegPrompts, jint ilStart, jint ilEnd) {
+  auto *session = reinterpret_cast<LlmSession *>(handle);
+  if (!session || !session->model || !jPosPrompts || !jNegPrompts) {
+    return env->NewFloatArray(0);
+  }
+
+  std::lock_guard<std::mutex> lock(session->mu);
+  pin_to_big_cores();
+
+  const int32_t n_embd = llama_model_n_embd(session->model);
+  const int32_t n_layer = llama_model_n_layer(session->model);
+  if (n_embd <= 0 || n_layer <= 1) {
+    return env->NewFloatArray(0);
+  }
+
+  const jsize n_pos = env->GetArrayLength(jPosPrompts);
+  const jsize n_neg = env->GetArrayLength(jNegPrompts);
+  const jsize n_pairs = std::min(n_pos, n_neg);
+  if (n_pairs <= 0) {
+    return env->NewFloatArray(0);
+  }
+
+  const int32_t clamped_start =
+      std::max<int32_t>(1, static_cast<int32_t>(ilStart));
+  const int32_t clamped_end =
+      std::min<int32_t>(n_layer - 1, static_cast<int32_t>(ilEnd));
+  if (clamped_start > clamped_end) {
+    return env->NewFloatArray(0);
+  }
+
+  std::vector<std::string> pos_prompts;
+  std::vector<std::string> neg_prompts;
+  pos_prompts.reserve(static_cast<size_t>(n_pairs));
+  neg_prompts.reserve(static_cast<size_t>(n_pairs));
+  for (jsize i = 0; i < n_pairs; ++i) {
+    auto j_pos =
+        static_cast<jstring>(env->GetObjectArrayElement(jPosPrompts, i));
+    auto j_neg =
+        static_cast<jstring>(env->GetObjectArrayElement(jNegPrompts, i));
+    std::string p_str;
+    std::string n_str;
+    if (j_pos) {
+      const char *c = env->GetStringUTFChars(j_pos, nullptr);
+      if (c) {
+        p_str = c;
+        env->ReleaseStringUTFChars(j_pos, c);
+      }
+      env->DeleteLocalRef(j_pos);
+    }
+    if (j_neg) {
+      const char *c = env->GetStringUTFChars(j_neg, nullptr);
+      if (c) {
+        n_str = c;
+        env->ReleaseStringUTFChars(j_neg, c);
+      }
+      env->DeleteLocalRef(j_neg);
+    }
+    if (!p_str.empty() && !n_str.empty()) {
+      pos_prompts.push_back(std::move(p_str));
+      neg_prompts.push_back(std::move(n_str));
+    }
+  }
+  if (pos_prompts.empty()) {
+    return env->NewFloatArray(0);
+  }
+
+  const size_t embd_sz = static_cast<size_t>(n_embd);
+  const size_t total_elems = static_cast<size_t>(n_layer - 1) * embd_sz;
+  std::vector<float> sum_diff(total_elems, 0.0f);
+  std::vector<float> pair_diff(total_elems, 0.0f);
+
+  CvecCaptureState capture;
+  capture.n_embd = n_embd;
+  capture.n_layer = n_layer;
+  capture.accum = &pair_diff;
+
+  llama_context_params cparams = llama_context_default_params();
+  cparams.n_ctx = 256;
+  cparams.n_batch = 256;
+  cparams.n_ubatch = 256;
+  cparams.n_threads = 3;
+  cparams.n_threads_batch = 3;
+  cparams.no_perf = true;
+  cparams.cb_eval = cvec_capture_cb;
+  cparams.cb_eval_user_data = &capture;
+
+  llama_context *tmp_ctx = llama_init_from_model(session->model, cparams);
+  if (!tmp_ctx) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                        "Failed to create temporary context for cvec training");
+    return env->NewFloatArray(0);
+  }
+  if (session->threadpool) {
+    llama_attach_threadpool(tmp_ctx, session->threadpool, session->threadpool);
+  }
+
+  const llama_vocab *vocab = llama_model_get_vocab(session->model);
+  const bool add_bos = llama_vocab_get_add_bos(vocab);
+  int32_t valid_pairs = 0;
+
+  for (size_t i = 0; i < pos_prompts.size(); ++i) {
+    std::vector<llama_token> pos_tokens =
+        tokenize_text(vocab, pos_prompts[i], add_bos, true);
+    std::vector<llama_token> neg_tokens =
+        tokenize_text(vocab, neg_prompts[i], add_bos, true);
+    if (pos_tokens.empty() || neg_tokens.empty()) {
+      continue;
+    }
+    if (pos_tokens.size() > 256) {
+      pos_tokens.resize(256);
+    }
+    if (neg_tokens.size() > 256) {
+      neg_tokens.resize(256);
+    }
+
+    std::fill(pair_diff.begin(), pair_diff.end(), 0.0f);
+
+    llama_memory_clear(llama_get_memory(tmp_ctx), true);
+    capture.sign = 1.0f;
+    capture.expected_tokens = static_cast<int64_t>(pos_tokens.size());
+    if (!eval_token_range(tmp_ctx, pos_tokens, 0, 256)) {
+      continue;
+    }
+
+    llama_memory_clear(llama_get_memory(tmp_ctx), true);
+    capture.sign = -1.0f;
+    capture.expected_tokens = static_cast<int64_t>(neg_tokens.size());
+    if (!eval_token_range(tmp_ctx, neg_tokens, 0, 256)) {
+      continue;
+    }
+
+    for (size_t k = 0; k < total_elems; ++k) {
+      sum_diff[k] += pair_diff[k];
+    }
+    ++valid_pairs;
+  }
+
+  if (session->threadpool) {
+    llama_detach_threadpool(tmp_ctx);
+  }
+  llama_free(tmp_ctx);
+
+  if (valid_pairs <= 0) {
+    return env->NewFloatArray(0);
+  }
+
+  const float inv_pairs = 1.0f / static_cast<float>(valid_pairs);
+  for (int32_t il = 1; il < n_layer; ++il) {
+    float *layer_ptr = sum_diff.data() + static_cast<size_t>(il - 1) * embd_sz;
+    if (il < clamped_start || il > clamped_end) {
+      std::fill(layer_ptr, layer_ptr + embd_sz, 0.0f);
+      continue;
+    }
+    double norm_sq = 0.0;
+    for (int32_t d = 0; d < n_embd; ++d) {
+      const float val = layer_ptr[d] * inv_pairs;
+      layer_ptr[d] = val;
+      norm_sq += static_cast<double>(val) * static_cast<double>(val);
+    }
+    if (norm_sq > 1e-12) {
+      const float inv_norm = static_cast<float>(1.0 / std::sqrt(norm_sq));
+      for (int32_t d = 0; d < n_embd; ++d) {
+        layer_ptr[d] *= inv_norm;
+      }
+    }
+  }
+
+  jfloatArray out_arr = env->NewFloatArray(static_cast<jsize>(total_elems));
+  if (out_arr) {
+    env->SetFloatArrayRegion(out_arr, 0, static_cast<jsize>(total_elems),
+                             sum_diff.data());
+  }
+  return out_arr;
 }
 
 JNIEXPORT void JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeUnload(

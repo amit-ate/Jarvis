@@ -48,6 +48,15 @@ interface LlmEngine {
         ilEnd: Int = 1,
     ): Boolean = false
 
+    fun modelGeometry(): Pair<Int, Int> = 0 to 0
+
+    fun trainControlVector(
+        positivePrompts: List<String>,
+        negativePrompts: List<String>,
+        ilStart: Int,
+        ilEnd: Int,
+    ): FloatArray = FloatArray(0)
+
     fun unload()
     val isLoaded: Boolean
 }
@@ -157,6 +166,36 @@ class LlamaJniEngine : LlmEngine {
         }
     }
 
+    override fun modelGeometry(): Pair<Int, Int> {
+        synchronized(this) {
+            val h = handle
+            if (h == 0L) return 0 to 0
+            val info = nativeModelInfo(h)
+            return if (info.size >= 2) info[0] to info[1] else 0 to 0
+        }
+    }
+
+    override fun trainControlVector(
+        positivePrompts: List<String>,
+        negativePrompts: List<String>,
+        ilStart: Int,
+        ilEnd: Int,
+    ): FloatArray {
+        synchronized(this) {
+            val h = handle
+            if (h == 0L || positivePrompts.isEmpty() || negativePrompts.isEmpty()) {
+                return FloatArray(0)
+            }
+            return nativeTrainControlVector(
+                handle = h,
+                posPrompts = positivePrompts.toTypedArray(),
+                negPrompts = negativePrompts.toTypedArray(),
+                ilStart = ilStart,
+                ilEnd = ilEnd,
+            )
+        }
+    }
+
     override fun unload() {
         synchronized(this) {
             val h = handle
@@ -234,6 +273,14 @@ class LlamaJniEngine : LlmEngine {
         ilStart: Int,
         ilEnd: Int,
     ): Int
+    private external fun nativeModelInfo(handle: Long): IntArray
+    private external fun nativeTrainControlVector(
+        handle: Long,
+        posPrompts: Array<String>,
+        negPrompts: Array<String>,
+        ilStart: Int,
+        ilEnd: Int,
+    ): FloatArray
     private external fun nativeUnload(handle: Long)
 
     companion object {
