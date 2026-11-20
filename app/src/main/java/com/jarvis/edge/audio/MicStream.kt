@@ -3,6 +3,7 @@ package com.jarvis.edge.audio
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -18,7 +19,7 @@ class MicUnavailableException(message: String, cause: Throwable? = null) :
 class MicStream(
     private val sampleRateHz: Int = SAMPLE_RATE,
     private val frameSize: Int = FRAME_SIZE,
-    private val softwareGain: Float = 2.0f,
+    private val softwareGain: Float = 2.2f,
 ) {
     private val suppressUntilMs = AtomicLong(0L)
 
@@ -54,6 +55,22 @@ class MicStream(
             throw MicUnavailableException("AudioRecord not initialized (state=${record.state})")
         }
 
+        val noiseSuppressor = runCatching {
+            if (NoiseSuppressor.isAvailable()) {
+                NoiseSuppressor.create(record.audioSessionId)?.apply { enabled = true }
+            } else {
+                null
+            }
+        }.getOrNull()
+
+        val echoCanceler = runCatching {
+            if (AcousticEchoCanceler.isAvailable()) {
+                AcousticEchoCanceler.create(record.audioSessionId)?.apply { enabled = true }
+            } else {
+                null
+            }
+        }.getOrNull()
+
         try {
             record.startRecording()
             if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
@@ -80,6 +97,8 @@ class MicStream(
                 emit(floats)
             }
         } finally {
+            runCatching { noiseSuppressor?.release() }
+            runCatching { echoCanceler?.release() }
             runCatching { record.stop() }
             record.release()
         }
