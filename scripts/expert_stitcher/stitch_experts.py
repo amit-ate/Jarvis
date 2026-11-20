@@ -23,6 +23,9 @@ REQUIRED_DOMAINS = (
 MAX_JARVIS_RAM_BUDGET_MB = 2600
 
 
+DEFAULT_HOST_ADAPTERS_DIR = "/path/to/Jarvis/models/adapters"
+
+
 def build_default_manifest() -> Dict[str, Any]:
     return {
         "version": 1,
@@ -35,6 +38,11 @@ def build_default_manifest() -> Dict[str, Any]:
                 "domain": "CONVERSATION",
                 "lora_path": None,
                 "lora_scale": 1.0,
+                "cvec_path": "conversation_expert.jvec",
+                "cvec_scale": 0.35,
+                "cvec_layer_start": 8,
+                "cvec_layer_end": 21,
+                "optional": True,
                 "temperature": 0.50,
                 "repeat_penalty": 1.20,
                 "keywords": ["hello", "hi", "chat", "joke", "story"],
@@ -43,6 +51,11 @@ def build_default_manifest() -> Dict[str, Any]:
                 "domain": "TOOL_USE",
                 "lora_path": None,
                 "lora_scale": 1.0,
+                "cvec_path": "tool_expert.jvec",
+                "cvec_scale": 0.30,
+                "cvec_layer_start": 8,
+                "cvec_layer_end": 21,
+                "optional": True,
                 "temperature": 0.25,
                 "repeat_penalty": 1.12,
                 "keywords": ["turn", "set", "timer", "alarm", "volume", "brightness", "tv", "ac"],
@@ -51,6 +64,11 @@ def build_default_manifest() -> Dict[str, Any]:
                 "domain": "REASONING",
                 "lora_path": None,
                 "lora_scale": 1.0,
+                "cvec_path": "reasoning_expert.jvec",
+                "cvec_scale": 0.40,
+                "cvec_layer_start": 8,
+                "cvec_layer_end": 21,
+                "optional": True,
                 "temperature": 0.40,
                 "repeat_penalty": 1.22,
                 "keywords": ["why", "how", "explain", "compare", "calculate", "difference"],
@@ -59,6 +77,11 @@ def build_default_manifest() -> Dict[str, Any]:
                 "domain": "KNOWLEDGE",
                 "lora_path": None,
                 "lora_scale": 1.0,
+                "cvec_path": "anti_echo_direct.jvec",
+                "cvec_scale": 0.35,
+                "cvec_layer_start": 8,
+                "cvec_layer_end": 21,
+                "optional": True,
                 "temperature": 0.35,
                 "repeat_penalty": 1.18,
                 "keywords": ["who", "what", "when", "where", "capital", "president", "search"],
@@ -67,6 +90,11 @@ def build_default_manifest() -> Dict[str, Any]:
                 "domain": "MEMORY",
                 "lora_path": None,
                 "lora_scale": 1.0,
+                "cvec_path": "anti_echo_direct.jvec",
+                "cvec_scale": 0.30,
+                "cvec_layer_start": 8,
+                "cvec_layer_end": 21,
+                "optional": True,
                 "temperature": 0.35,
                 "repeat_penalty": 1.18,
                 "keywords": ["remember", "recall", "forget", "note", "learned", "know about me"],
@@ -75,6 +103,11 @@ def build_default_manifest() -> Dict[str, Any]:
                 "domain": "VISION",
                 "lora_path": None,
                 "lora_scale": 1.0,
+                "cvec_path": "anti_echo_direct.jvec",
+                "cvec_scale": 0.25,
+                "cvec_layer_start": 8,
+                "cvec_layer_end": 21,
+                "optional": True,
                 "temperature": 0.25,
                 "repeat_penalty": 1.15,
                 "keywords": ["see", "look", "holding", "read this", "camera"],
@@ -160,6 +193,43 @@ def validate_manifest(
                         "(set \"optional\": true if provisioned only on-device)"
                     )
 
+        cvec_scale = entry.get("cvec_scale")
+        if cvec_scale is not None:
+            if isinstance(cvec_scale, bool) or not isinstance(cvec_scale, (int, float)) or not (0.0 <= float(cvec_scale) <= 2.0):
+                errors.append(f"experts[{idx}] ({domain}) invalid cvec_scale: {cvec_scale!r}")
+
+        layer_start = entry.get("cvec_layer_start")
+        layer_end = entry.get("cvec_layer_end")
+        if layer_start is not None or layer_end is not None:
+            if (
+                isinstance(layer_start, bool)
+                or isinstance(layer_end, bool)
+                or not isinstance(layer_start, int)
+                or not isinstance(layer_end, int)
+                or layer_start < 1
+                or layer_start > layer_end
+            ):
+                errors.append(
+                    f"experts[{idx}] ({domain}) invalid cvec layer range: "
+                    f"[{layer_start!r}, {layer_end!r}] (must satisfy 1 <= start <= end)"
+                )
+
+        cvec_path = entry.get("cvec_path")
+        if cvec_path is not None:
+            if not isinstance(cvec_path, str) or not cvec_path.strip():
+                errors.append(f"experts[{idx}] ({domain}) cvec_path must be null or non-empty string")
+            elif not is_optional:
+                candidate = (
+                    cvec_path
+                    if os.path.isabs(cvec_path) or not adapters_dir
+                    else os.path.join(adapters_dir, cvec_path)
+                )
+                if not os.path.isfile(candidate):
+                    errors.append(
+                        f"experts[{idx}] ({domain}) cvec_path {candidate!r} does not exist locally "
+                        "(set \"optional\": true if provisioned only on-device)"
+                    )
+
     missing_domains = [d for d in REQUIRED_DOMAINS if d not in seen_domains]
     if missing_domains:
         errors.append(f"Missing required expert domains: {', '.join(missing_domains)}")
@@ -167,7 +237,11 @@ def validate_manifest(
     return errors
 
 
-def push_manifest_adb(manifest_path: str, serial: str) -> None:
+def push_manifest_adb(
+    manifest_path: str,
+    serial: str,
+    adapters_dir: Optional[str] = None,
+) -> None:
     remote_dir = "/sdcard/Jarvis/models/adapters"
     remote_file = f"{remote_dir}/experts.json"
     subprocess.run(
@@ -179,13 +253,30 @@ def push_manifest_adb(manifest_path: str, serial: str) -> None:
         check=True,
     )
 
+    search_dir = adapters_dir
+    if not search_dir:
+        if os.path.isdir(DEFAULT_HOST_ADAPTERS_DIR):
+            search_dir = DEFAULT_HOST_ADAPTERS_DIR
+        else:
+            search_dir = os.path.dirname(os.path.abspath(manifest_path))
+
+    if search_dir and os.path.isdir(search_dir):
+        for fname in sorted(os.listdir(search_dir)):
+            if fname.endswith((".jvec", ".gguf")):
+                local_path = os.path.join(search_dir, fname)
+                if os.path.isfile(local_path):
+                    subprocess.run(
+                        ["adb", "-s", serial, "push", local_path, f"{remote_dir}/{fname}"],
+                        check=True,
+                    )
+
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Generate and validate Jarvis ExpertRouter experts.json manifest.")
     parser.add_argument("--out", default="bench/eval/experts.json", help="Manifest path to write/validate (default: bench/eval/experts.json)")
-    parser.add_argument("--validate", action="store_true", help="Validate manifest schema, RAM budget, and LoRA paths")
-    parser.add_argument("--adapters-dir", default=None, help="Local directory used to resolve relative lora_path entries")
-    parser.add_argument("--push-adb", metavar="SERIAL", help="Push validated manifest via ADB to /sdcard/Jarvis/models/adapters/experts.json")
+    parser.add_argument("--validate", action="store_true", help="Validate manifest schema, RAM budget, and adapter paths")
+    parser.add_argument("--adapters-dir", default=None, help="Local directory used to resolve relative lora_path/cvec_path entries")
+    parser.add_argument("--push-adb", metavar="SERIAL", help="Push validated manifest and .jvec/.gguf adapters via ADB to /sdcard/Jarvis/models/adapters/")
     args = parser.parse_args(argv)
 
     if args.validate and os.path.isfile(args.out):
@@ -196,7 +287,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         manifest = build_default_manifest()
         source_desc = "generated default ExpertRouter manifest"
 
-    adapters_dir = args.adapters_dir or (os.path.dirname(os.path.abspath(args.out)) if os.path.isfile(args.out) else None)
+    adapters_dir = args.adapters_dir
+    if not adapters_dir:
+        if os.path.isdir(DEFAULT_HOST_ADAPTERS_DIR):
+            adapters_dir = DEFAULT_HOST_ADAPTERS_DIR
+        elif os.path.isfile(args.out):
+            adapters_dir = os.path.dirname(os.path.abspath(args.out))
+
     errors = validate_manifest(manifest, adapters_dir=adapters_dir)
     if errors:
         print(f"VALIDATION FAILED ({source_desc}):", file=sys.stderr)
@@ -215,17 +312,17 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.push_adb:
         if os.path.isfile(args.out):
-            push_manifest_adb(args.out, args.push_adb)
+            push_manifest_adb(args.out, args.push_adb, adapters_dir=adapters_dir)
         else:
             with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
                 json.dump(manifest, tmp, indent=2)
                 tmp.write("\n")
                 tmp_path = tmp.name
             try:
-                push_manifest_adb(tmp_path, args.push_adb)
+                push_manifest_adb(tmp_path, args.push_adb, adapters_dir=adapters_dir)
             finally:
                 os.unlink(tmp_path)
-        print(f"Pushed experts.json to {args.push_adb}:/sdcard/Jarvis/models/adapters/experts.json")
+        print(f"Pushed experts.json and adapters to {args.push_adb}:/sdcard/Jarvis/models/adapters/")
 
     domains = [e["domain"] for e in manifest["experts"]]
     print(
