@@ -20,9 +20,20 @@ class Brain(
     private val clockMillis: () -> Long = System::currentTimeMillis,
     private val llmDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val log: (String) -> Unit = {},
+    private val expertRouter: ExpertRouter? = null,
+    private val shortcutMatcher: ((String) -> ToolCall?)? = null,
+    private val selfStateProvider: () -> String? = { null },
+    private val memoryProvider: (String) -> String? = { null },
+    private val onEpisodeComplete: (userText: String, reply: String, toolCall: ToolCall?, echoed: Boolean) -> Unit = { _, _, _, _ -> },
 ) {
     private val history = ArrayList<Turn>()
     private var lastTurnMillis: Long = 0L
+
+    private data class StreamResult(
+        val raw: String,
+        val spokeAnything: Boolean,
+        val abortedForEcho: Boolean,
+    )
 
     suspend fun respond(userText: String, onSentence: suspend (String) -> Unit) {
         val now = clockMillis()
@@ -30,8 +41,9 @@ class Brain(
             history.clear()
         }
 
-        // Fast path is checked first so basic commands work even without a loaded LLM or while HOT.
-        fast.match(userText)?.let { call ->
+        // Fast path / learned shortcut is checked first so basic commands work even without a loaded LLM or while HOT.
+        val fastCall = fast.match(userText) ?: shortcutMatcher?.invoke(userText)
+        fastCall?.let { call ->
             log("fast intent: $call")
             val result = tools.run(call)
             log("tool result: spoken=\"${result.spoken}\" feed=${result.feedToModel?.take(120)}")
@@ -39,6 +51,7 @@ class Brain(
                 if (result.spoken.isNotBlank()) {
                     onSentence(result.spoken)
                 }
+                onEpisodeComplete(userText, result.spoken, call, false)
                 return
             }
             val obsPrompt = prompts.prompt(
@@ -49,10 +62,12 @@ class Brain(
                 prompt = obsPrompt,
                 grammar = prompts.sayOnlyGrammar(),
                 maxTokens = replyMaxTokens(),
+                sampling = SamplingConfig(temperature = 0.35f, repeatPenalty = 1.18f),
                 fallback = result.spoken,
                 onSentence = onSentence,
             )
             recordTurn(userText, "SAY: $answer")
+            onEpisodeComplete(userText, answer, call, false)
             return
         }
 
@@ -70,22 +85,81 @@ class Brain(
         }
 
         val maxTokens = replyMaxTokens()
-        val promptText = prompts.prompt(activeHistory(), userText)
+        val sampling = expertRouter?.selectAndActivate(userText, engine) ?: SamplingConfig()
+        val selfState = selfStateProvider()
+        val memoryContext = memoryProvider(userText)
+        val promptText = prompts.prompt(
+            history = activeHistory(),
+            user = userText,
+            selfStateLine = selfState,
+            memoryContext = memoryContext,
+        )
         val t0 = clockMillis()
-        val rawOutput = streamSayOrCollectTool(
+        val firstRun = streamSayOrCollectTool(
             engine = engine,
             prompt = promptText,
             grammar = prompts.grammar(),
             maxTokens = maxTokens,
+            sampling = sampling,
+            echoGuardUserText = userText,
             onSentence = onSentence,
         )
 
-        val parsed = parseModelOutput(rawOutput)
-        log("llm raw (${clockMillis() - t0} ms, maxTokens=$maxTokens): \"${rawOutput.take(300)}\" -> $parsed")
+        val parsed = parseModelOutput(firstRun.raw)
+        log("llm raw (${clockMillis() - t0} ms, maxTokens=$maxTokens): \"${firstRun.raw.take(300)}\" -> $parsed")
         when (parsed) {
             is ModelOutput.Say -> {
-                if (parsed.text.isNotBlank()) {
-                    recordTurn(userText, "SAY: ${parsed.text}")
+                val replyText = parsed.text
+                if (!firstRun.abortedForEcho && replyText.isNotBlank() && !EchoGuard.isEcho(userText, replyText)) {
+                    recordTurn(userText, "SAY: $replyText")
+                    onEpisodeComplete(userText, replyText, null, false)
+                    return
+                }
+
+                // Echo detected (either buffered at first sentence or full reply) -> retry once with anti-echo sampling.
+                if (firstRun.abortedForEcho || replyText.isBlank() || EchoGuard.isEcho(userText, replyText)) {
+                    log("EchoGuard triggered on first pass; retrying with anti-echo sampling")
+                    val retryPrompt = prompts.prompt(
+                        history = activeHistory(),
+                        user = userText,
+                        selfStateLine = selfState,
+                        memoryContext = memoryContext,
+                        extraNudge = ANTI_ECHO_NUDGE,
+                    )
+                    val retryRun = streamSayOrCollectTool(
+                        engine = engine,
+                        prompt = retryPrompt,
+                        grammar = prompts.sayOnlyGrammar(),
+                        maxTokens = maxTokens,
+                        sampling = RETRY_SAMPLING,
+                        echoGuardUserText = userText,
+                        onSentence = if (firstRun.spokeAnything) ({}) else onSentence,
+                    )
+                    val retryParsed = parseModelOutput(retryRun.raw)
+                    val retryText = (retryParsed as? ModelOutput.Say)?.text.orEmpty()
+                    if (!retryRun.abortedForEcho && retryText.isNotBlank() && !EchoGuard.isEcho(userText, retryText)) {
+                        recordTurn(userText, "SAY: $retryText")
+                        onEpisodeComplete(userText, retryText, null, false)
+                        return
+                    }
+
+                    // Retry still echoed -> try web_search fallback for factual questions, else safe fallback.
+                    if (EchoGuard.looksLikeFactualQuestion(userText)) {
+                        val searchCall = ToolCall("web_search", mapOf("query" to userText))
+                        val searchResult = tools.run(searchCall)
+                        if (searchResult.ok && searchResult.spoken.isNotBlank()) {
+                            if (!firstRun.spokeAnything && !retryRun.spokeAnything) {
+                                onSentence(searchResult.spoken)
+                            }
+                            onEpisodeComplete(userText, searchResult.spoken, searchCall, true)
+                            return
+                        }
+                    }
+
+                    if (!firstRun.spokeAnything && !retryRun.spokeAnything) {
+                        onSentence(ECHO_FALLBACK_MSG)
+                    }
+                    onEpisodeComplete(userText, ECHO_FALLBACK_MSG, null, true)
                 }
             }
             is ModelOutput.Call -> {
@@ -101,15 +175,18 @@ class Brain(
                         prompt = followUpPrompt,
                         grammar = prompts.sayOnlyGrammar(),
                         maxTokens = maxTokens,
+                        sampling = SamplingConfig(temperature = 0.35f, repeatPenalty = 1.18f),
                         fallback = result.spoken,
                         onSentence = onSentence,
                     )
                     recordTurn(userText, "SAY: $reply")
+                    onEpisodeComplete(userText, reply, parsed.call, false)
                 } else {
                     if (result.spoken.isNotBlank()) {
                         onSentence(result.spoken)
                         recordTurn(userText, "SAY: ${result.spoken}")
                     }
+                    onEpisodeComplete(userText, result.spoken, parsed.call, false)
                 }
             }
         }
@@ -119,6 +196,7 @@ class Brain(
         prompt: String,
         grammar: String,
         maxTokens: Int,
+        sampling: SamplingConfig,
         fallback: String,
         onSentence: suspend (String) -> Unit,
     ): String {
@@ -128,9 +206,11 @@ class Brain(
             prompt = prompt,
             grammar = grammar,
             maxTokens = maxTokens,
+            sampling = sampling,
+            echoGuardUserText = null,
             onSentence = onSentence,
         )
-        return when (val out = parseModelOutput(collected)) {
+        return when (val out = parseModelOutput(collected.raw)) {
             is ModelOutput.Say -> {
                 if (out.text.isNotBlank()) {
                     out.text
@@ -151,8 +231,10 @@ class Brain(
         prompt: String,
         grammar: String?,
         maxTokens: Int,
+        sampling: SamplingConfig,
+        echoGuardUserText: String?,
         onSentence: suspend (String) -> Unit,
-    ): String = coroutineScope {
+    ): StreamResult = coroutineScope {
         val raw = StringBuilder()
         val splitter = SentenceSplitter(splitClauses = true)
         val sentences = Channel<String>(Channel.UNLIMITED)
@@ -163,7 +245,7 @@ class Brain(
             var mode = StreamMode.UNKNOWN
             var prefixSkipped = false
             try {
-                engine.generate(prompt, grammar, maxTokens) { piece ->
+                engine.generate(prompt, grammar, maxTokens, sampling) { piece ->
                     if (cancelledByConsumer.get()) return@generate false
                     raw.append(piece)
 
@@ -232,8 +314,20 @@ class Brain(
             }
         }
 
+        var firstChecked = false
+        var spokeAnything = false
+        var abortedForEcho = false
         try {
             for (sentence in sentences) {
+                if (!firstChecked) {
+                    firstChecked = true
+                    if (echoGuardUserText != null && EchoGuard.isEcho(echoGuardUserText, sentence)) {
+                        abortedForEcho = true
+                        cancelledByConsumer.set(true)
+                        break
+                    }
+                }
+                spokeAnything = true
                 onSentence(sentence)
             }
         } catch (ce: CancellationException) {
@@ -246,7 +340,11 @@ class Brain(
             throw t
         }
         producer.join()
-        raw.toString()
+        StreamResult(
+            raw = raw.toString(),
+            spokeAnything = spokeAnything,
+            abortedForEcho = abortedForEcho,
+        )
     }
 
     private fun replyMaxTokens(): Int =
@@ -270,8 +368,17 @@ class Brain(
     private enum class StreamMode { UNKNOWN, SAY, TOOL }
 
     companion object {
-        const val HISTORY_IDLE_RESET_MS = 120_000L
+        const val HISTORY_IDLE_RESET_MS = 900_000L
         const val NO_MODEL_MSG = "My language model isn't loaded, so I can only handle basic commands."
         const val OVERHEATING_MSG = "I'm overheating, so I'll keep to basic commands."
+        const val ECHO_FALLBACK_MSG = "I'm not sure how to answer that yet."
+        private const val ANTI_ECHO_NUDGE = "Do NOT repeat the user's words. Answer directly."
+        private val RETRY_SAMPLING = SamplingConfig(
+            temperature = 0.72f,
+            repeatPenalty = 1.32f,
+            freqPenalty = 0.25f,
+            presencePenalty = 0.20f,
+            penalizeUserTokens = 24,
+        )
     }
 }
