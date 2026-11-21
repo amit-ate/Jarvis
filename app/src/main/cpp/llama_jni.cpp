@@ -41,6 +41,36 @@ void pin_to_big_cores() {
   sched_setaffinity(0, sizeof(mask), &mask);
 }
 
+// Samples like llama.cpp's common sampler: the chain (top-k first) runs on the raw logits and only the chosen token
+// is checked against the grammar; the grammar runs over the whole vocabulary only when that token is rejected.
+// Gemma's 262k vocabulary made a grammar-first chain cost ~100+ ms per token.
+llama_token sample_lazy_grammar(llama_sampler *chain, llama_sampler *grammar, llama_context *ctx, int32_t n_vocab,
+                                std::vector<llama_token_data> &cand) {
+  const float *logits = llama_get_logits_ith(ctx, -1);
+  auto fill = [&]() {
+    cand.resize(static_cast<size_t>(n_vocab));
+    for (int32_t i = 0; i < n_vocab; ++i) cand[i] = llama_token_data{i, logits[i], 0.0f};
+    return llama_token_data_array{cand.data(), cand.size(), -1, false};
+  };
+  llama_token_data_array arr = fill();
+  llama_sampler_apply(chain, &arr);
+  llama_token id = arr.data[arr.selected].id;
+  if (grammar) {
+    llama_token_data single{id, 1.0f, 0.0f};
+    llama_token_data_array one{&single, 1, -1, false};
+    llama_sampler_apply(grammar, &one);
+    if (std::isinf(single.logit)) {
+      arr = fill();
+      llama_sampler_apply(grammar, &arr);
+      llama_sampler_apply(chain, &arr);
+      id = arr.data[arr.selected].id;
+    }
+    llama_sampler_accept(grammar, id);
+  }
+  llama_sampler_accept(chain, id);
+  return id;
+}
+
 ggml_threadpool_t create_big_core_threadpool(int n_threads) {
   struct ggml_threadpool_params tpp = ggml_threadpool_params_default(n_threads);
   tpp.poll = 0; // Mandatory on SDM636 Android to prevent big-core barrier spin
@@ -198,10 +228,11 @@ bool eval_token_range(llama_context *ctx,
     return true;
 
   llama_batch batch = llama_batch_init(batch_cap, 0, 1);
-  for (size_t offset = start_idx; offset < total;
-       offset += static_cast<size_t>(batch_cap)) {
-    const int32_t n = static_cast<int32_t>(
+  for (size_t offset = start_idx; offset < total;) {
+    int32_t n = static_cast<int32_t>(
         std::min<size_t>(static_cast<size_t>(batch_cap), total - offset));
+    // ggml's 2x2 Q4_0 kernel (ARMv8.0) only runs for an even token count: send an odd batch as even + 1.
+    if (n > 1 && (n % 2) != 0) --n;
     batch.n_tokens = n;
     for (int32_t j = 0; j < n; ++j) {
       const size_t pos = offset + static_cast<size_t>(j);
@@ -215,6 +246,7 @@ bool eval_token_range(llama_context *ctx,
       llama_batch_free(batch);
       return false;
     }
+    offset += static_cast<size_t>(n);
   }
   llama_batch_free(batch);
   return true;
@@ -336,6 +368,8 @@ JNIEXPORT jlong JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLoad(
   cparams.n_threads = 3;
   cparams.n_threads_batch = 4;
   cparams.no_perf = true;
+  // Auto would turn flash attention on; on the A73 cores it is slower (tg32 @ 384 ctx: 7.3 -> 6.0 t/s).
+  cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
 
   llama_context *ctx = llama_init_from_model(model, cparams);
   if (!ctx) {
@@ -436,6 +470,7 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerateWithSampling(
   session->prev_tokens = prompt_tokens;
 
   int64_t t_grammar_clone_us = 0;
+  llama_sampler *grammar = nullptr;
   llama_sampler *smpl =
       llama_sampler_chain_init(llama_sampler_chain_default_params());
   if (!grammar_str.empty()) {
@@ -456,7 +491,7 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerateWithSampling(
     }
     t_grammar_clone_us = now_us() - t_g_start;
     if (gram) {
-      llama_sampler_chain_add(smpl, gram);
+      grammar = gram;  // checked lazily per token below, not over the whole vocabulary
     } else {
       __android_log_print(ANDROID_LOG_ERROR, kLogTag,
                           "Failed to parse GBNF grammar");
@@ -487,6 +522,7 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerateWithSampling(
       env->GetMethodID(cb_cls, "onToken", "(Ljava/lang/String;)Z");
   env->DeleteLocalRef(cb_cls);
 
+  std::vector<llama_token_data> cand;
   int32_t out_count = 0;
   int64_t first_token_ms = -1;
   int64_t gen_start_us = 0;
@@ -503,7 +539,7 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerateWithSampling(
 
   for (int32_t step = 0; step < limit; ++step) {
     const int64_t t_sample_start = now_us();
-    const llama_token id = llama_sampler_sample(smpl, session->ctx, -1);
+    const llama_token id = sample_lazy_grammar(smpl, grammar, session->ctx, n_vocab, cand);
     const int64_t now = now_us();
     if (step == 0) {
       t_first_sample_us = now - t_sample_start;
@@ -560,6 +596,7 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerateWithSampling(
 
   llama_batch_free(one);
   llama_sampler_free(smpl);
+  if (grammar) llama_sampler_free(grammar);
 
   const int64_t gen_elapsed_us =
       (gen_start_us > 0) ? std::max<int64_t>(1, now_us() - gen_start_us) : 0;
