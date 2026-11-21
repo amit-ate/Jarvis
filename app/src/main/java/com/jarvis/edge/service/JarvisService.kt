@@ -138,6 +138,8 @@ class JarvisService : Service() {
     private var liveTranscriber: SherpaLiveTranscriber? = null
     private var accurateTranscriber: Transcriber? = null
     @Volatile private var personalSpeech: com.jarvis.edge.core.PersonalSpeechModel? = null
+    /** "Run auto learning": starts a reflection pass now and reports what was learned (set once the pipeline is up). */
+    @Volatile private var learnNowFn: (() -> Boolean)? = null
     private var llmEngine: LlmEngine? = null
     private var embeddingEngine: EmbeddingEngine? = null
     private var mindStore: SqliteMindStore? = null
@@ -267,6 +269,16 @@ class JarvisService : Service() {
 
             val healthGuard = HealthGuard.fromAndroidContext(this@JarvisService)
             val mind = SqliteMindStore(this@JarvisService).also { mindStore = it }
+            // Facts mined by reflection that don't refer to the user were Jarvis's own answers ("A spider has eight
+            // legs", "Ten miles is 40.6 km") stored as facts about the user: drop them.
+            runCatching {
+                mind.listActiveFacts(500)
+                    .filter { it.sourceEpisodeId != null && !ReflectionWorker.mentionsUser(it.text) }
+                    .forEach {
+                        mind.deleteFact(it.id)
+                        android.util.Log.i("JarvisMind", "removed fact not about the user: ${it.text}")
+                    }
+            }
             val adaptersDir = File(paths.root, "adapters")
             val kvDir = File(filesDir, "kv")
             val recoveryHelper = Recovery(repo = mind, adaptersDir = adaptersDir, kvDir = kvDir, clockMs = System::currentTimeMillis)
@@ -486,6 +498,7 @@ class JarvisService : Service() {
                 MindForgetTool(mind, embedFn),
                 MindStatusTool(
                     store = mind,
+                    onLearnNow = { learnNowFn?.invoke() ?: false },
                     selfSnapshotProvider = { selfModel.capture() },
                     onMuteRequested = { durationMs -> initiativeEngine.muteFor(durationMs) },
                     onVersionActivated = { rolledBack ->
@@ -628,7 +641,10 @@ class JarvisService : Service() {
                         if (jniEngine.isLoaded && _state.value == AssistantState.IDLE) {
                             val extractPrompt = prompts.prompt(
                                 history = emptyList(),
-                                user = "Extract JSON {\"facts\":[],\"vocab\":[]} of durable personal facts and special names from:\n$batch",
+                                user = "From the user's own words below, list facts the user states about themselves " +
+                                    "(name, age, family, likes, places, routines) as short sentences starting with \"User\", " +
+                                    "and unusual names they use. Ignore questions and general knowledge. Reply only with JSON " +
+                                    "{\"facts\":[],\"vocab\":[]}.\n$batch",
                             )
                             val sb = StringBuilder()
                             runCatching {
@@ -1036,6 +1052,49 @@ class JarvisService : Service() {
             }
 
             launch(Dispatchers.IO) { publishMindState(mind, selfModel) }
+
+            val learnNowRunning = AtomicBoolean(false)
+            learnNowFn = {
+                if (!learnNowRunning.compareAndSet(false, true)) {
+                    true
+                } else {
+                    serviceScope.launch(Dispatchers.IO) {
+                        try {
+                            delay(1_500)
+                            while (_state.value != AssistantState.IDLE) delay(300)
+                            val report = reflectionWorker.reflectOnce(
+                                canRun = true,
+                                isInterrupted = { _state.value != AssistantState.IDLE },
+                            )
+                            if (report.vocabLearned > 0 || report.correctionsLearned > 0) {
+                                runCatching { live.updateHotwords(hotwordsFile) }
+                            }
+                            publishMindState(mind, selfModel)
+                            val msg = ReflectionWorker.learnNowSummary(report, mind.isLearningPaused())
+                            android.util.Log.i("JarvisMind", "learn now: $report")
+                            while (_state.value != AssistantState.IDLE) delay(300)
+                            if (initiativeSpeaking.compareAndSet(false, true)) {
+                                try {
+                                    updateState(AssistantState.LISTENING)
+                                    updateState(AssistantState.THINKING)
+                                    updateState(AssistantState.SPEAKING, msg)
+                                    _reply.value = msg
+                                    chatLog(this@JarvisService).addReplyChunk(msg)
+                                    ttsSpeaker.clearStop()
+                                    ttsSpeaker.speak(msg)
+                                } finally {
+                                    mic.suppressFor(250L)
+                                    updateState(AssistantState.IDLE)
+                                    initiativeSpeaking.set(false)
+                                }
+                            }
+                        } finally {
+                            learnNowRunning.set(false)
+                        }
+                    }
+                    true
+                }
+            }
 
             // Background idle reflection + overnight Stage 4 evolution loop pinned to little cores (cpu0..3).
             reflectionJob?.cancel()

@@ -85,6 +85,10 @@ object FastIntents {
     private val pauseLearningRegex = Regex(
         "^(?:stop|pause)\\s+learning$"
     )
+    /** "Run auto learning" (also as the recogniser hears it: "run or learn", "run auto learn"). */
+    private val learnNowRegex = Regex(
+        "^(?:(?:run|start|do|begin)\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:(?:auto|or)\\s*(?:to\\s+)?learn(?:ing)?|learning\\s+(?:now|cycle|pass)|reflection|self[- ]learning)(?:\\s+(?:now|mode|cycle))?|learn now|reflect now)$"
+    )
     private val resumeLearningRegex = Regex(
         "^(?:resume|start)\\s+learning$"
     )
@@ -260,6 +264,7 @@ object FastIntents {
         if (knowAboutMeRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "know_about_me"))
         if (selfStatusRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "self_status"))
         if (pauseLearningRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "pause_learning"))
+        if (learnNowRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "learn_now"))
         if (resumeLearningRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "resume_learning"))
         if (beQuietRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "be_quiet"))
         if (rollbackBrainRegex.matches(norm)) return ToolCall("mind_status", mapOf("action" to "rollback_brain"))

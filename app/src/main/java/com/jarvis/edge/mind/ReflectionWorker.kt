@@ -124,15 +124,10 @@ class ReflectionWorker(
                     aborted = true,
                 )
             }
-            val promptBatch = buildString {
-                // Interrupted episodes (empty reply) are never mined for facts.
-                for (ep in unreflected.filter { it.reply.isNotBlank() }) {
-                    append("User: ").append(ep.chosenTranscript).append('\n')
-                    if (ep.reply.isNotBlank()) {
-                        append("Jarvis: ").append(ep.reply).append('\n')
-                    }
-                }
-            }.trim()
+            // Only the user's own words: Jarvis's answers ("Paris.", "A spider has eight legs.") were being stored as facts
+            // about the user. Interrupted episodes (empty reply) are never mined for facts.
+            val userLines = unreflected.filter { it.reply.isNotBlank() }.map { it.chosenTranscript.trim() }.filter { it.isNotEmpty() }
+            val promptBatch = userLines.joinToString("\n") { "User: $it" }
 
             val rawJson = if (promptBatch.isEmpty()) null else runCatching { extractor.invoke(promptBatch) }.getOrNull()
             if (isInterrupted()) {
@@ -150,6 +145,7 @@ class ReflectionWorker(
                 val lastId = unreflected.last().id
                 val parsed = parseLlmExtraction(rawJson)
                 for (factText in parsed.facts) {
+                    if (!isAboutUser(factText, userLines)) continue
                     store.learnFact(factText, embed(factText), sourceEpisodeId = lastId, confidence = 0.85f)
                     factsLearned++
                 }
@@ -263,5 +259,44 @@ class ReflectionWorker(
             "^not\\s+(.+?)\\s*,\\s*(.+)$",
             RegexOption.IGNORE_CASE,
         )
+
+        /** What Jarvis says after a "run auto learning" pass: only what actually happened. */
+        fun learnNowSummary(r: ReflectionReport, paused: Boolean): String = when {
+            paused -> "Learning is paused, so I didn't learn anything. Say resume learning to turn it back on."
+            r.aborted -> "I stopped learning because you started talking. Ask me again when you're done."
+            r.episodesProcessed == 0 -> "Done. There were no new conversations to learn from since last time."
+            else -> {
+                val parts = listOfNotNull(
+                    r.factsLearned.takeIf { it > 0 }?.let { if (it == 1) "1 fact about you" else "$it facts about you" },
+                    r.vocabLearned.takeIf { it > 0 }?.let { if (it == 1) "1 new word" else "$it new words" },
+                    r.correctionsLearned.takeIf { it > 0 }?.let { if (it == 1) "1 correction" else "$it corrections" },
+                    r.shortcutsPromoted.takeIf { it > 0 }?.let { if (it == 1) "1 shortcut" else "$it shortcuts" },
+                )
+                val n = r.episodesProcessed
+                val convo = if (n == 1) "1 conversation" else "$n conversations"
+                if (parts.isEmpty()) "Done. I went through $convo but found nothing new to learn."
+                else "Done. I went through $convo and learned " + parts.joinToString(", ") + "."
+            }
+        }
+
+        fun mentionsUser(text: String): Boolean = MENTIONS_USER.containsMatchIn(text)
+
+        private val MENTIONS_USER = Regex("\\b(user|user's|i|i'm|i've|my|me|mine)\\b", RegexOption.IGNORE_CASE)
+        private val FACT_STOP_WORDS = setOf(
+            "user", "users", "the", "a", "an", "is", "are", "was", "were", "has", "have", "of", "to", "in", "and", "my",
+            "i", "me", "their", "his", "her", "s", "for", "on", "at", "with", "be", "it",
+        )
+
+        /**
+         * A fact is kept only if it is about the user and comes from their own words: it must refer to the user and
+         * most of its content words must appear in what the user said (not in Jarvis's answers or general knowledge).
+         */
+        fun isAboutUser(fact: String, userLines: List<String>): Boolean {
+            if (!MENTIONS_USER.containsMatchIn(fact)) return false
+            val said = userLines.joinToString(" ").lowercase().split(WORD_SPLIT).filter { it.isNotEmpty() }.toHashSet()
+            val content = fact.lowercase().split(WORD_SPLIT).filter { it.isNotEmpty() && it !in FACT_STOP_WORDS }
+            if (content.isEmpty()) return false
+            return content.count { it in said }.toFloat() / content.size >= 0.6f
+        }
     }
 }

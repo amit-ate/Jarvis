@@ -197,6 +197,8 @@ class MindStatusTool(
     private val onMuteRequested: (Long) -> Unit = {},
     private val clockMs: () -> Long = System::currentTimeMillis,
     private val onVersionActivated: (ModelVersion) -> Unit = {},
+    /** Starts a learning (reflection) pass in the background; false when that isn't possible right now. */
+    private val onLearnNow: () -> Boolean = { false },
 ) : Tool {
     override val name = "mind_status"
     override val description = "Inspect Jarvis self-status, learned knowledge, pause/resume learning, quiet mode, or brain rollback"
@@ -246,6 +248,15 @@ class MindStatusTool(
                 store.setLearningPaused(true)
                 ToolResult("Learning is now paused.", ok = true)
             }
+            "learn_now" -> {
+                if (store.isLearningPaused()) {
+                    ToolResult("Learning is paused. Say resume learning first.", ok = false)
+                } else if (onLearnNow()) {
+                    ToolResult("Okay, I'm going through our recent conversations now. I'll tell you what I learned.", ok = true)
+                } else {
+                    ToolResult("I can't run learning right now.", ok = false)
+                }
+            }
             "resume_learning" -> {
                 store.setLearningPaused(false)
                 ToolResult("Learning has resumed.", ok = true)
@@ -280,6 +291,7 @@ class MindStatusTool(
             "know_about_me",
             "self_status",
             "pause_learning",
+            "learn_now",
             "resume_learning",
             "be_quiet",
             "rollback_brain",

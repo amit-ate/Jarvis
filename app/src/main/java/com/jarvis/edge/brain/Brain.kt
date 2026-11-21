@@ -254,7 +254,8 @@ class Brain(
         // Every sentence is checked before it is spoken: an echo of the user or a repeat of an earlier reply is
         // rejected; for a factual question, a low-confidence first sentence (a guess) is replaced by an honest
         // "not sure", and a low-confidence later sentence ends the reply.
-        val factual = EchoGuard.looksLikeFactualQuestion(userText) && !CHITCHAT.containsMatchIn(userText.trim())
+        val factual = EchoGuard.looksLikeFactualQuestion(userText) && !CHITCHAT.containsMatchIn(userText.trim()) &&
+            !ABOUT_JARVIS.containsMatchIn(userText.trim())
         // With a web lookup to fall back on, a guess is cheaper to replace, so a weaker token is enough to check.
         val canLookUp = offlineNudge == null && heardConfidence >= HEARD_UNSURE && tools.has("web_search")
         val gate: (Int, String, Confidence) -> Gate = { i, s, c ->
@@ -805,6 +806,15 @@ class Brain(
         /** Questions about the conversation or Jarvis itself, not facts about the world. */
         private val CHITCHAT = Regex(
             """^(tell me (a|another) (joke|story)|tell me something|say something|sing|how are you|how's it going|how do you do|how have you been|what's up|whats up|what are you doing|who are you|what can you do|what do you think|do you like|are you)\b""",
+            RegexOption.IGNORE_CASE,
+        )
+        /**
+         * Questions about Jarvis itself ("Will you be able to dream?", "What are your top five thoughts?") are not looked
+         * up: the web answered them with self-help pages. Requests phrased with "you" ("Can you tell me who ...") are not
+         * matched.
+         */
+        internal val ABOUT_JARVIS = Regex(
+            """\byour(self|s)?\b|^(?:(?:what|how|why|who|where|when)\s+)?(?:are|were|will|would|do|did|can|could|have|has)\s+you\b(?!\s+(?:tell|give|find|show|look|search|explain|know|remind|set|play|open|call|turn|check|help|define|translate|read|recommend|suggest|name|list|convert|calculate|spell|describe))""",
             RegexOption.IGNORE_CASE,
         )
         private val SINGLE_WORD_OK = setOf(
