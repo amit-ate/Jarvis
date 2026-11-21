@@ -30,6 +30,8 @@ class TurnController(
     private val onRespondStart: (transcript: String) -> Unit = {},
     /** Called when the user stops the reply mid-speech; [spokenSoFar] is what was already said. */
     private val onRespondInterrupted: (spokenSoFar: String) -> Unit = {},
+    /** The recorded request and the words chosen for it, for keeping voice samples (not called for blank turns). */
+    private val onUtterance: (samples: FloatArray, transcript: String) -> Unit = { _, _ -> },
 ) {
     private val spokenSoFar = StringBuilder()
 
@@ -194,6 +196,7 @@ class TurnController(
 
             onTranscript(transcript)
             onTranscriptionDetail(liveRaw, accurateRaw, transcript)
+            if (transcript.length >= 2) onUtterance(samples, transcript)
 
             if (transcript.length < 2) {
                 if (followUp) return
@@ -238,6 +241,31 @@ class TurnController(
     private fun looksLikeWakeTail(text: String): Boolean {
         val words = text.lowercase().replace(Regex("[^a-z\\s]"), " ").trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
         return words.size == 1 && words[0].length <= 4 && words[0] !in SHORT_REQUESTS
+    }
+
+    /**
+     * Records one utterance for the voice-training screen without transcribing or answering it: null when nothing
+     * was said before the no-speech timeout.
+     */
+    suspend fun captureUtterance(frames: Flow<FloatArray>): FloatArray? {
+        setState(AssistantState.LISTENING)
+        segmenter.reset()
+        var captured: FloatArray? = null
+        try {
+            frames.collect { frame ->
+                when (val result = segmenter.accept(frame, shortTail = false)) {
+                    is SpeechSegmenter.Result.Pending -> Unit
+                    is SpeechSegmenter.Result.NoSpeech -> throw TurnDoneSignal()
+                    is SpeechSegmenter.Result.Done -> {
+                        captured = result.samples
+                        throw TurnDoneSignal()
+                    }
+                }
+            }
+        } catch (_: TurnDoneSignal) {
+            // Segment complete (or no speech).
+        }
+        return captured
     }
 
     private class TurnDoneSignal : CancellationException("Turn segmentation finished")

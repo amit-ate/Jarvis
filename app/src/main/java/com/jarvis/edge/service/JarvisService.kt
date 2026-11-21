@@ -16,6 +16,8 @@ import com.jarvis.edge.audio.GatedWakeWord
 import com.jarvis.edge.audio.MicStream
 import com.jarvis.edge.audio.SherpaLiveTranscriber
 import com.jarvis.edge.audio.SherpaMoonshineTranscriber
+import com.jarvis.edge.audio.SherpaTransducerTranscriber
+import com.jarvis.edge.audio.Transcriber
 import com.jarvis.edge.audio.SherpaSpeaker
 import com.jarvis.edge.audio.SherpaWakeWord
 import com.jarvis.edge.audio.SileroVad
@@ -38,7 +40,9 @@ import com.jarvis.edge.brain.PromptBuilder
 import com.jarvis.edge.brain.ToolCall
 import com.jarvis.edge.core.AssistantState
 import com.jarvis.edge.core.ChatLog
+import com.jarvis.edge.core.AccurateAsr
 import com.jarvis.edge.core.ModelPaths
+import com.jarvis.edge.core.VoiceSampleStore
 import com.jarvis.edge.core.TurnController
 import com.jarvis.edge.core.canMoveTo
 import com.jarvis.edge.hud.BrainVersionUi
@@ -132,7 +136,7 @@ class JarvisService : Service() {
     private var turnVad: SileroVad? = null
     private var wakeWord: SherpaWakeWord? = null
     private var liveTranscriber: SherpaLiveTranscriber? = null
-    private var accurateTranscriber: SherpaMoonshineTranscriber? = null
+    private var accurateTranscriber: Transcriber? = null
     private var llmEngine: LlmEngine? = null
     private var embeddingEngine: EmbeddingEngine? = null
     private var mindStore: SqliteMindStore? = null
@@ -143,6 +147,8 @@ class JarvisService : Service() {
     private val initiativeSpeaking = AtomicBoolean(false)
     /** Set after an answer: the mic reopens for a follow-up question without the wake word. */
     private val followUpRequested = AtomicBoolean(false)
+    /** Set by the voice-training screen: record the next utterance as a sample of this sentence instead of a request. */
+    private val enrollLabel = java.util.concurrent.atomic.AtomicReference<String?>(null)
     /** A typed (text mode) request is being answered: voice turns wait. */
     private val textTurnActive = AtomicBoolean(false)
     @Volatile private var textInputHandler: ((text: String, speak: Boolean) -> Unit)? = null
@@ -178,6 +184,7 @@ class JarvisService : Service() {
         when (intent?.action) {
             ACTION_STOP_SPEAKING -> speaker?.stop()
             ACTION_MANUAL_WAKE -> manualWakeRequested.set(true)
+            ACTION_ENROLL -> intent.getStringExtra(EXTRA_TEXT)?.trim()?.takeIf { it.isNotEmpty() }?.let { enrollLabel.set(it) }
             ACTION_TEXT_INPUT -> {
                 val text = intent.getStringExtra(EXTRA_TEXT)?.trim().orEmpty()
                 val speak = intent.getBooleanExtra(EXTRA_SPEAK, false)
@@ -222,7 +229,13 @@ class JarvisService : Service() {
         runCatching { speaker?.release() }
         runCatching { wakeWord?.release() }
         runCatching { liveTranscriber?.release() }
-        runCatching { accurateTranscriber?.release() }
+        runCatching {
+            when (val t = accurateTranscriber) {
+                is SherpaMoonshineTranscriber -> t.release()
+                is SherpaTransducerTranscriber -> t.release()
+                else -> Unit
+            }
+        }
         runCatching { vad?.release() }
         runCatching { turnVad?.release() }
         if (!kvSaveStuck) runCatching { llmEngine?.unload() }
@@ -335,18 +348,30 @@ class JarvisService : Service() {
                 hotwordsScore = 2.0f,
             ).also { liveTranscriber = it }
 
-            val moonshineDir = File(paths.root, "asr-moonshine")
-            val accurate = if (File(moonshineDir, "encode.int8.onnx").exists()) {
-                runCatching {
-                    SherpaMoonshineTranscriber(
-                        modelDir = moonshineDir,
-                        numThreads = 4,
-                        onInitThread = { LlamaJniEngine.pinCurrentThreadToBigCores() },
-                    ).also { accurateTranscriber = it }
-                }.getOrNull()
-            } else {
-                null
+            val accurateAsr = ModelPaths.resolveAccurateAsr(paths.root)
+            fun loadAccurate(asr: AccurateAsr): Transcriber = when (asr.kind) {
+                AccurateAsr.Kind.TRANSDUCER -> SherpaTransducerTranscriber(
+                    modelDir = asr.dir,
+                    numThreads = 4,
+                    onInitThread = { LlamaJniEngine.pinCurrentThreadToBigCores() },
+                )
+                AccurateAsr.Kind.MOONSHINE -> SherpaMoonshineTranscriber(
+                    modelDir = asr.dir,
+                    numThreads = 4,
+                    onInitThread = { LlamaJniEngine.pinCurrentThreadToBigCores() },
+                )
             }
+            var loadedAsr = "none"
+            val accurate: Transcriber? = accurateAsr?.let { asr ->
+                runCatching { loadAccurate(asr) }
+                    .onFailure { android.util.Log.e("JarvisVoice", "accurate ASR ${asr.dir.name} failed to load", it) }
+                    .getOrNull()?.also { loadedAsr = asr.dir.name }
+                    // A broken custom model must not leave Jarvis deaf: fall back to the next recogniser.
+                    ?: ModelPaths.resolveAccurateAsr(paths.root, skip = setOf(asr.dir.name))?.let { fallback ->
+                        runCatching { loadAccurate(fallback) }.getOrNull()?.also { loadedAsr = fallback.dir.name }
+                    }
+            }?.also { accurateTranscriber = it }
+            android.util.Log.i("JarvisVoice", "accurate ASR: $loadedAsr (${accurate?.javaClass?.simpleName})")
 
             val ttsSpeaker = SherpaSpeaker(
                 ttsDir = File(paths.root, "tts"),
@@ -656,6 +681,13 @@ class JarvisService : Service() {
                     openEpisodeId = runCatching {
                         mind.beginEpisode(System.currentTimeMillis(), lastLiveRaw, lastAccurateRaw, chosen)
                     }.getOrNull()
+                },
+                onUtterance = { samples, text ->
+                    if (saveVoiceSamplesEnabled(this@JarvisService)) {
+                        launch(Dispatchers.IO) {
+                            voiceSamples().save(samples, text, VoiceSampleStore.SOURCE_TURN)
+                        }
+                    }
                 },
                 onRespondInterrupted = { _ ->
                     openEpisodeId?.let { id ->
@@ -1084,6 +1116,31 @@ class JarvisService : Service() {
 
                     preRoll.addLast(frame)
                     while (preRoll.size > PRE_ROLL_FRAMES) preRoll.removeFirst()
+                    val enrollText = enrollLabel.getAndSet(null)
+                    if (enrollText != null) {
+                        android.util.Log.i("JarvisVoice", "ENROLL listening: $enrollText")
+                        earcon.playWake()
+                        updateState(AssistantState.LISTENING)
+                        val ch = Channel<FloatArray>(Channel.UNLIMITED)
+                        preRoll.clear()
+                        turnChannel = ch
+                        turnJob = launch {
+                            try {
+                                val audio = turnController.captureUtterance(ch.receiveAsFlow())
+                                val saved = audio?.let {
+                                    voiceSamples().save(it, enrollText, VoiceSampleStore.SOURCE_ENROLL)
+                                }
+                                android.util.Log.i("JarvisVoice", "ENROLL ${saved?.wav ?: "no speech"}: $enrollText")
+                                publishEnrollResult(enrollText, saved != null)
+                            } finally {
+                                updateState(AssistantState.IDLE)
+                                ch.close()
+                                mic.suppressFor(250L)
+                                gatedWake.reset()
+                            }
+                        }
+                        return@collect
+                    }
                     val followUp = followUpRequested.getAndSet(false)
                     val woken = followUp || manualWakeRequested.getAndSet(false) || gatedWake.accept(frame)
                     if (woken) {
@@ -1302,6 +1359,45 @@ class JarvisService : Service() {
         const val ACTION_STOP_SPEAKING = "com.jarvis.edge.action.STOP_SPEAKING"
         const val ACTION_MANUAL_WAKE = "com.jarvis.edge.action.MANUAL_WAKE"
         const val ACTION_TEXT_INPUT = "com.jarvis.edge.action.TEXT_INPUT"
+        const val ACTION_ENROLL = "com.jarvis.edge.action.ENROLL"
+        private const val PREF_SAVE_VOICE = "save_voice_samples"
+        /** Where voice recordings for training the recogniser are kept (pulled by tools/voice-train). */
+        const val VOICE_SAMPLES_DIR = "/sdcard/Jarvis/voice_samples"
+
+        @Volatile private var voiceSampleStore: VoiceSampleStore? = null
+
+        fun voiceSamples(): VoiceSampleStore = voiceSampleStore ?: synchronized(this) {
+            voiceSampleStore ?: VoiceSampleStore(File(VOICE_SAMPLES_DIR)).also { voiceSampleStore = it }
+        }
+
+        /** Keep each spoken request's audio (labelled with what was heard) for training; on by default. */
+        fun saveVoiceSamplesEnabled(context: Context): Boolean =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PREF_SAVE_VOICE, true)
+
+        fun setSaveVoiceSamplesEnabled(context: Context, enabled: Boolean) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PREF_SAVE_VOICE, enabled).apply()
+        }
+
+        /** Outcome of the last voice-training recording; [seq] changes on every attempt. */
+        data class EnrollResult(val text: String, val saved: Boolean, val seq: Long)
+
+        private val _enrollResult = MutableStateFlow<EnrollResult?>(null)
+        val enrollResult: StateFlow<EnrollResult?> = _enrollResult.asStateFlow()
+        private val enrollSeq = java.util.concurrent.atomic.AtomicLong(0)
+
+        private fun publishEnrollResult(text: String, saved: Boolean) {
+            _enrollResult.value = EnrollResult(text, saved, enrollSeq.incrementAndGet())
+        }
+
+        /** Voice training: Jarvis chimes, records the user reading [text], and saves it as a labelled sample. */
+        fun requestEnroll(context: Context, text: String) {
+            context.startService(
+                Intent(context, JarvisService::class.java).apply {
+                    action = ACTION_ENROLL
+                    putExtra(EXTRA_TEXT, text)
+                },
+            )
+        }
         const val EXTRA_TEXT = "text"
         const val EXTRA_SPEAK = "speak"
         private const val PREFS = "jarvis_prefs"

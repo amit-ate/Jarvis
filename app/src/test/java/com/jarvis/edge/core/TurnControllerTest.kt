@@ -129,6 +129,45 @@ class TurnControllerTest {
     }
 
     @Test
+    fun `a transcribed request is handed over with its audio for voice samples`() = runBlocking {
+        val kept = mutableListOf<Pair<Int, String>>()
+        val tc = TurnController(
+            segmenter = SpeechSegmenter(ScriptedVad(2), trailingSilenceMs = 64, shortTrailingSilenceMs = 32),
+            live = FakeLive("what is dist moon"),
+            accurate = object : Transcriber {
+                override fun transcribe(samples: FloatArray) = "what is the distance to the moon"
+            },
+            brain = dummyBrain("SAY: About 384 thousand kilometers."),
+            speaker = FakeSpeaker(),
+            setState = {},
+            onUtterance = { samples, text -> kept.add(samples.size to text) },
+        )
+        tc.runTurn(dummyFrames())
+        assertEquals(1, kept.size)
+        assertEquals("what is the distance to the moon", kept[0].second)
+        assertTrue(kept[0].first > 0)
+    }
+
+    @Test
+    fun `captureUtterance records speech without answering, and null on silence`() = runBlocking {
+        val speaker = FakeSpeaker()
+        fun controller(vad: Vad) = TurnController(
+            segmenter = SpeechSegmenter(vad, trailingSilenceMs = 64, noSpeechTimeoutMs = 96),
+            live = FakeLive(""),
+            accurate = object : Transcriber {
+                override fun transcribe(samples: FloatArray): String = throw AssertionError("no transcription")
+            },
+            brain = dummyBrain(),
+            speaker = speaker,
+            setState = {},
+        )
+        val audio = controller(ScriptedVad(4)).captureUtterance(dummyFrames())
+        assertTrue(audio != null && audio.isNotEmpty())
+        assertEquals(null, controller(ScriptedVad(0)).captureUtterance(dummyFrames()))
+        assertTrue(speaker.spoken.isEmpty())
+    }
+
+    @Test
     fun `NoSpeech returns to idle silently`() = runBlocking {
         val speaker = FakeSpeaker()
         val states = mutableListOf<AssistantState>()

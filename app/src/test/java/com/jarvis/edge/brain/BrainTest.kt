@@ -865,6 +865,17 @@ class BrainTest {
     }
 
     @Test
+    fun `conversions and arithmetic are computed without the model`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Ten miles is equal to 40.6 kilometers.") }
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(emptyList()), tools = ToolRegistry(emptyList()))
+        val out = mutableListOf<String>()
+        brain.respond("Convert ten miles to kilometers.") { out.add(it) }
+        brain.respond("What is 25 times 4?") { out.add(it) }
+        assertEquals(listOf("10 miles is 16.09 kilometers.", "25 times 4 is 100."), out)
+        assertEquals(0, fakeLlm.calls)
+    }
+
+    @Test
     fun `plain knowledge question is answered by the model before searching`() = runBlocking {
         val fakeLlm = FakeLlm(logProbFor = { lp(0.95) }) { _, _, _, onToken -> onToken("SAY: The capital of France is Paris.") }
         val queries = mutableListOf<String>()

@@ -5,6 +5,11 @@ import java.io.File
 class MissingModelException(val relativePath: String) :
     IllegalStateException("Missing model file: $relativePath")
 
+/** The accurate (whole-utterance) recogniser to load and where its files are. */
+data class AccurateAsr(val kind: Kind, val dir: File) {
+    enum class Kind { TRANSDUCER, MOONSHINE }
+}
+
 class ModelPaths(
     val root: File,
     val llmFileName: String = DEFAULT_LLM_MODEL,
@@ -70,6 +75,26 @@ class ModelPaths(
          * well but took 4-14 s to start, too slow for voice.
          */
         val PREFERRED_LLM_MODELS = listOf("google_gemma-3-1b-it-Q4_0.gguf", DEFAULT_LLM_MODEL)
+
+        /**
+         * Accurate recognisers in order of preference: a model fine-tuned on the user's voice (tools/voice-train), then
+         * Parakeet TDT 110M, then the original Moonshine tiny.
+         */
+        val ACCURATE_ASR_DIRS = listOf("asr-custom", "asr-parakeet")
+
+        fun resolveAccurateAsr(root: File, skip: Set<String> = emptySet()): AccurateAsr? {
+            fun has(dir: File, base: String) =
+                File(dir, "$base.int8.onnx").isFile || File(dir, "$base.onnx").isFile
+            for (name in ACCURATE_ASR_DIRS) {
+                if (name in skip) continue
+                val dir = File(root, name)
+                if (has(dir, "encoder") && has(dir, "decoder") && has(dir, "joiner") && File(dir, "tokens.txt").isFile) {
+                    return AccurateAsr(AccurateAsr.Kind.TRANSDUCER, dir)
+                }
+            }
+            val moonshine = File(root, "asr-moonshine")
+            return if ("asr-moonshine" !in skip && File(moonshine, "encode.int8.onnx").isFile) AccurateAsr(AccurateAsr.Kind.MOONSHINE, moonshine) else null
+        }
 
         /** The chat model named in [ACTIVE_MODEL_FILE] if present, else the first [PREFERRED_LLM_MODELS] on disk. */
         fun resolveLlmFileName(root: File): String {

@@ -48,6 +48,10 @@
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:windowSoftInputMode="adjustResize" />
+        <activity
+            android:name=".hud.VoiceTrainingActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
 
         <service
             android:name=".service.JarvisService"

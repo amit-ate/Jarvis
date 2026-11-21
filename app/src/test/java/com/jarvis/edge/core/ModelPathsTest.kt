@@ -58,4 +58,19 @@ class ModelPathsTest {
         File(llm, "google_gemma-3-1b-it-Q4_0.gguf").writeBytes(byteArrayOf(1))
         assertEquals("google_gemma-3-1b-it-Q4_0.gguf", ModelPaths.resolveLlmFileName(tempDir))
     }
+
+    @Test
+    fun `accurate recogniser prefers custom, then parakeet, then moonshine`(@TempDir tempDir: File) {
+        assertEquals(null, ModelPaths.resolveAccurateAsr(tempDir))
+        fun put(rel: String) = File(tempDir, rel).apply { parentFile?.mkdirs(); writeBytes(byteArrayOf(1)) }
+        put("asr-moonshine/encode.int8.onnx")
+        assertEquals(AccurateAsr.Kind.MOONSHINE, ModelPaths.resolveAccurateAsr(tempDir)?.kind)
+        listOf("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt").forEach { put("asr-parakeet/$it") }
+        assertEquals(File(tempDir, "asr-parakeet"), ModelPaths.resolveAccurateAsr(tempDir)?.dir)
+        // An incomplete custom model (no joiner) is skipped.
+        listOf("encoder.onnx", "decoder.onnx", "tokens.txt").forEach { put("asr-custom/$it") }
+        assertEquals(File(tempDir, "asr-parakeet"), ModelPaths.resolveAccurateAsr(tempDir)?.dir)
+        put("asr-custom/joiner.onnx")
+        assertEquals(File(tempDir, "asr-custom"), ModelPaths.resolveAccurateAsr(tempDir)?.dir)
+    }
 }

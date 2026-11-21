@@ -7,6 +7,7 @@ import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineMoonshineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.k2fsa.sherpa.onnx.OnlineModelConfig
 import com.k2fsa.sherpa.onnx.OnlineRecognizer
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
@@ -54,6 +55,67 @@ class SherpaMoonshineTranscriber(
             numThreads = numThreads,
             debug = false,
             provider = "cpu",
+        )
+        val config = OfflineRecognizerConfig(
+            featConfig = FeatureConfig(sampleRate = 16_000, featureDim = 80, dither = 0.0f),
+            modelConfig = modelConfig,
+            decodingMethod = "greedy_search",
+        )
+        recognizer = OfflineRecognizer(null, config)
+    }
+
+    override fun transcribe(samples: FloatArray): String {
+        if (!threadPrepared) {
+            onInitThread()
+            threadPrepared = true
+        }
+        val normalized = samples.copyOf()
+        SimdAudio.normalizeUtterance(normalized, targetPeak = 0.85f, maxGain = 4.0f)
+        val stream = recognizer.createStream()
+        return try {
+            stream.acceptWaveform(normalized, 16_000)
+            recognizer.decode(stream)
+            recognizer.getResult(stream).text.trim()
+        } finally {
+            stream.release()
+        }
+    }
+
+    fun release() {
+        recognizer.release()
+    }
+}
+
+/**
+ * NVIDIA Parakeet TDT (NeMo transducer) through sherpa-onnx: the accurate recogniser when models/asr-parakeet or a
+ * fine-tuned models/asr-custom is present. On the phone (SDM636, 4 threads) it decodes at ~0.16x real time and got
+ * 1.7% word errors on the laptop-voice test set, against 7.5% for Moonshine tiny.
+ */
+class SherpaTransducerTranscriber(
+    modelDir: File,
+    numThreads: Int = 4,
+    private val onInitThread: () -> Unit = {},
+) : Transcriber {
+
+    private val recognizer: OfflineRecognizer
+    private var threadPrepared = false
+
+    init {
+        fun part(base: String): String {
+            val int8 = File(modelDir, "$base.int8.onnx")
+            return (if (int8.exists()) int8 else File(modelDir, "$base.onnx")).absolutePath
+        }
+        val modelConfig = OfflineModelConfig(
+            transducer = OfflineTransducerModelConfig(
+                encoder = part("encoder"),
+                decoder = part("decoder"),
+                joiner = part("joiner"),
+            ),
+            tokens = File(modelDir, "tokens.txt").absolutePath,
+            numThreads = numThreads,
+            debug = false,
+            provider = "cpu",
+            modelType = "nemo_transducer",
         )
         val config = OfflineRecognizerConfig(
             featConfig = FeatureConfig(sampleRate = 16_000, featureDim = 80, dither = 0.0f),

@@ -77,6 +77,9 @@ class ChatActivity : ComponentActivity() {
                     Text("Chat", color = Color(0xFF38BDF8), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.weight(1f))
                     Text(statusLabel(state), color = Color(0xFF64748B), fontSize = 12.sp)
+                    TextButton(onClick = {
+                        startActivity(android.content.Intent(this@ChatActivity, VoiceTrainingActivity::class.java))
+                    }) { Text("Train voice", color = Color(0xFF38BDF8)) }
                     TextButton(onClick = { log.clear() }) { Text("Clear", color = Color(0xFF94A3B8)) }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {

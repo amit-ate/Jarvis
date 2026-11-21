@@ -10,9 +10,10 @@ KWS_DIR="$MODELS_DIR/kws"
 VAD_DIR="$MODELS_DIR/vad"
 MOONSHINE_DIR="$MODELS_DIR/asr-moonshine"
 ZIPFORMER_DIR="$MODELS_DIR/asr-zipformer"
+PARAKEET_DIR="$MODELS_DIR/asr-parakeet"
 TTS_DIR="$MODELS_DIR/tts"
 VLM_DIR="$MODELS_DIR/vlm"
-mkdir -p "$LLM_DIR" "$EMBED_DIR" "$ADAPTERS_DIR" "$KWS_DIR" "$VAD_DIR" "$MOONSHINE_DIR" "$ZIPFORMER_DIR" "$TTS_DIR" "$VLM_DIR"
+mkdir -p "$LLM_DIR" "$EMBED_DIR" "$ADAPTERS_DIR" "$KWS_DIR" "$VAD_DIR" "$MOONSHINE_DIR" "$ZIPFORMER_DIR" "$PARAKEET_DIR" "$TTS_DIR" "$VLM_DIR"
 
 download_hf() {
   local repo="$1"
@@ -105,6 +106,8 @@ EOF
 download_url     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" "$VAD_DIR/silero_vad.onnx"
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-moonshine-tiny-en-int8.tar.bz2" "$MOONSHINE_DIR"
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2" "$ZIPFORMER_DIR"
+# Accurate recogniser (preferred over Moonshine when present): Parakeet TDT 110M, 1.7% vs 7.5% word errors, ~0.16x real time on the phone
+download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8.tar.bz2" "$PARAKEET_DIR"
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_GB-alan-medium.tar.bz2" "$TTS_DIR"
 
 # Vision-Language Model (Task 3 / Task 11: SmolVLM-256M for <= 25s CPU inference on SDM636)

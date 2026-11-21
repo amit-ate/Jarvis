@@ -108,6 +108,15 @@ class Brain(
         }
         lastUserUtterance = userText
 
+        // Arithmetic and unit conversions are computed, not generated: the 1B model said 10 miles was 40.6 km.
+        QuickMath.answer(userText)?.let { math ->
+            log("quick math: $math")
+            onSentence(math)
+            recordTurn(userText, "SAY: $math")
+            onEpisodeComplete(userText, math, null, false)
+            return
+        }
+
         // Fast path / learned shortcut is checked first so basic commands work even without a loaded LLM or while HOT.
         val engineReady = llm?.isLoaded == true && healthGuard?.level() != HealthGuard.Level.HOT
         var offlineNudge: String? = null
@@ -759,8 +768,11 @@ class Brain(
         const val NOT_FOUND_MSG = "Sorry, I couldn't find that online."
         /** Search text handed to the model: enough for an answer, short enough to prefill quickly on the phone. */
         private const val MAX_EVIDENCE_CHARS = 240
-        /** Factual answers with a token below this are looked up when online (wrong names on the phone: 0.12-0.35). */
-        private const val LOOKUP_MIN_PROB = 0.45f
+        /**
+         * Factual answers with a token below this are looked up when online. Wrong names on the phone: 0.12-0.35
+         * (Gemma's "Jana Samata" anthem: 0.33); a right "Paris." came in at 0.42, so 0.45 sent it to a needless lookup.
+         */
+        private const val LOOKUP_MIN_PROB = 0.40f
         private val REPEAT_STOP_WORDS = setOf("the", "and", "for", "are", "was", "were", "has", "have", "its", "his", "her", "this", "that", "with", "from", "also", "you", "your")
         /** Questions whose answer changes over time: the model's training data is stale, so these are searched first. */
         private val TIME_SENSITIVE = Regex(

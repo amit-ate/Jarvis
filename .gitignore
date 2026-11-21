@@ -10,3 +10,4 @@ bench/out-a73/
 *.aab
 .worktrees/
 .superpowers/
+__pycache__/
