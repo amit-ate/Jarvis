@@ -108,6 +108,7 @@ class MindUiBridgeTest {
             override fun setLearningPaused(paused: Boolean) { calls += "setLearningPaused:$paused" }
             override fun exportJson() { calls += "exportJson" }
             override fun triggerReflection() { calls += "triggerReflection" }
+            override fun triggerEvolution() { calls += "triggerEvolution" }
             override fun refresh() { calls += "refresh" }
         }
 
@@ -120,6 +121,7 @@ class MindUiBridgeTest {
         MindUiBridge.setLearningPaused(true)
         MindUiBridge.exportJson()
         MindUiBridge.triggerReflection()
+        MindUiBridge.triggerEvolution()
         MindUiBridge.refresh()
 
         assertEquals(
@@ -133,6 +135,7 @@ class MindUiBridgeTest {
                 "setLearningPaused:true",
                 "exportJson",
                 "triggerReflection",
+                "triggerEvolution",
                 "refresh",
             ),
             calls,
@@ -154,6 +157,7 @@ class MindUiBridgeTest {
         MindUiBridge.setLearningPaused(true)
         MindUiBridge.exportJson()
         MindUiBridge.triggerReflection()
+        MindUiBridge.triggerEvolution()
         MindUiBridge.refresh()
 
         assertEquals(initial, MindUiBridge.state.value)

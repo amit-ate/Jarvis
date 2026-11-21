@@ -556,7 +556,18 @@ private fun ExpertsTab(
         }
 
         item(key = "versions-header") {
-            SectionTitle("Brain Versions (${versions.size})")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SectionTitle("Brain Versions (${versions.size})")
+                ActionButton(
+                    label = "Evolve",
+                    accent = EmeraldHealthy,
+                    onClick = { MindUiBridge.triggerEvolution() },
+                )
+            }
         }
 
         if (versions.isEmpty()) {

@@ -91,6 +91,7 @@ interface MindUiActions {
     fun setLearningPaused(paused: Boolean)
     fun exportJson()
     fun triggerReflection()
+    fun triggerEvolution() = Unit
     fun refresh()
 }
 
@@ -143,6 +144,10 @@ object MindUiBridge {
 
     fun triggerReflection() {
         actions?.triggerReflection()
+    }
+
+    fun triggerEvolution() {
+        actions?.triggerEvolution()
     }
 
     fun refresh() {
