@@ -188,6 +188,31 @@ class JarvisService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP_SPEAKING -> speaker?.stop()
+            ACTION_SET_VOICE -> {
+                val id = intent.getStringExtra(EXTRA_TEXT).orEmpty()
+                val voice = com.jarvis.edge.core.Voices.available(File(ModelPaths.DEFAULT_ROOT)).firstOrNull { it.id == id }
+                val sp = speaker
+                if (voice != null && sp != null) {
+                    getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("voice", voice.id).apply()
+                    serviceScope.launch(Dispatchers.IO) {
+                        runCatching { sp.switchVoice(voice) }
+                            .onFailure { android.util.Log.e("JarvisVoice", "voice switch failed", it) }
+                        // Preview, only when nothing else is going on.
+                        if (_state.value == AssistantState.IDLE && initiativeSpeaking.compareAndSet(false, true)) {
+                            try {
+                                updateState(AssistantState.LISTENING)
+                                updateState(AssistantState.THINKING)
+                                updateState(AssistantState.SPEAKING)
+                                sp.clearStop()
+                                sp.speak(com.jarvis.edge.core.Voices.PREVIEW_TEXT)
+                            } finally {
+                                updateState(AssistantState.IDLE)
+                                initiativeSpeaking.set(false)
+                            }
+                        }
+                    }
+                }
+            }
             ACTION_MANUAL_WAKE -> manualWakeRequested.set(true)
             ACTION_ENROLL -> intent.getStringExtra(EXTRA_TEXT)?.trim()?.takeIf { it.isNotEmpty() }?.let { enrollLabel.set(it) }
             ACTION_TEXT_INPUT -> {
@@ -1488,6 +1513,21 @@ class JarvisService : Service() {
         const val ACTION_MANUAL_WAKE = "com.jarvis.edge.action.MANUAL_WAKE"
         const val ACTION_TEXT_INPUT = "com.jarvis.edge.action.TEXT_INPUT"
         const val ACTION_ENROLL = "com.jarvis.edge.action.ENROLL"
+        const val ACTION_SET_VOICE = "com.jarvis.edge.action.SET_VOICE"
+
+        fun currentVoiceId(context: Context): String =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("voice", null)
+                ?: com.jarvis.edge.core.Voices.DEFAULT_ID
+
+        /** Switches the speaking voice and plays a short preview. */
+        fun setVoice(context: Context, id: String) {
+            context.startService(
+                Intent(context, JarvisService::class.java).apply {
+                    action = ACTION_SET_VOICE
+                    putExtra(EXTRA_TEXT, id)
+                },
+            )
+        }
         private const val PREF_SAVE_VOICE = "save_voice_samples"
         /** Where voice recordings for training the recogniser are kept (pulled by tools/voice-train). */
         const val VOICE_SAMPLES_DIR = "/sdcard/Jarvis/voice_samples"

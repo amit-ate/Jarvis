@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,6 +62,8 @@ class ChatActivity : ComponentActivity() {
             var input by remember { mutableStateOf("") }
             var speakReplies by remember { mutableStateOf(prefs.getBoolean("speak", false)) }
             var followUp by remember { mutableStateOf(JarvisService.followUpEnabled(this@ChatActivity)) }
+            val voices = remember { com.jarvis.edge.core.Voices.available(java.io.File(com.jarvis.edge.core.ModelPaths.DEFAULT_ROOT)) }
+            var voiceId by remember { mutableStateOf(JarvisService.currentVoiceId(this@ChatActivity)) }
             val listState = rememberLazyListState()
             LaunchedEffect(messages.size, messages.lastOrNull()?.text) {
                 if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
@@ -99,6 +102,28 @@ class ChatActivity : ComponentActivity() {
                         followUp = it
                         JarvisService.setFollowUpEnabled(this@ChatActivity, it)
                     })
+                }
+                if (voices.size > 1) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Voice", color = Color(0xFF94A3B8), fontSize = 13.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Row(Modifier.weight(1f).horizontalScroll(androidx.compose.foundation.rememberScrollState())) {
+                            for (v in voices) {
+                                val selected = v.id == voiceId
+                                TextButton(onClick = {
+                                    voiceId = v.id
+                                    JarvisService.setVoice(this@ChatActivity, v.id)
+                                }) {
+                                    Text(
+                                        v.label,
+                                        color = if (selected) Color(0xFF38BDF8) else Color(0xFF64748B),
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                        fontSize = 13.sp,
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
                 LazyColumn(
                     state = listState,

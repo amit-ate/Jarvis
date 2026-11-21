@@ -114,6 +114,13 @@ download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-mo
 # and re-quantizing it with onnxruntime quantize_dynamic was ~1.6x slower on the phone for no accuracy gain).
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2" "$LIVE_DIR"
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_GB-alan-medium.tar.bz2" "$TTS_DIR"
+# Extra speaking voices (core/Voices.kt); they reuse tts/espeak-ng-data. Default: Indian English male (Arctic speaker ksp).
+# fp32 on purpose: the int8 builds were slower on the phone (~1.0x vs ~0.75x real time).
+for v in arctic l2arctic kusal; do
+  mkdir -p "$MODELS_DIR/tts-voices/$v"
+  download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-$v-medium.tar.bz2" "$MODELS_DIR/tts-voices/$v"
+  rm -rf "$MODELS_DIR/tts-voices/$v/espeak-ng-data"
+done
 
 # Vision-Language Model (Task 3 / Task 11: SmolVLM-256M for <= 25s CPU inference on SDM636)
 download_hf "ggml-org/SmolVLM-256M-Instruct-GGUF" "SmolVLM-256M-Instruct-Q8_0.gguf"        "$VLM_DIR"
