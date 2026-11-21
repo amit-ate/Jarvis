@@ -251,4 +251,28 @@ class MindStoreTest {
         assertTrue(rb.ok)
         assertTrue(rb.spoken.contains("base-v1"))
     }
+
+    @Test
+    fun `begun but not completed episode is listed as interrupted`() {
+        val store = InMemoryMindStore()
+        val id = store.beginEpisode(5_000L, "live", "accurate", "chosen")
+        val interrupted = store.listInterruptedEpisodes(sinceMs = 0L)
+        assertEquals(1, interrupted.size)
+        assertEquals(id, interrupted[0].id)
+        assertEquals("", interrupted[0].reply)
+        assertFalse(interrupted[0].outcomeOk)
+        assertFalse(interrupted[0].reflected)
+        assertTrue(store.listInterruptedEpisodes(sinceMs = 5_001L).isEmpty())
+    }
+
+    @Test
+    fun `completed episode keeps reply and outcome`() {
+        val store = InMemoryMindStore()
+        val id = store.beginEpisode(5_000L, "live", "accurate", "chosen")
+        store.completeEpisode(id, "It's sunny", null, null, echoed = false)
+        val ep = store.listRecentEpisodes(10).single { it.id == id }
+        assertEquals("It's sunny", ep.reply)
+        assertTrue(ep.outcomeOk)
+        assertTrue(store.listInterruptedEpisodes(sinceMs = 0L).isEmpty())
+    }
 }

@@ -13,6 +13,15 @@ import java.io.File
  */
 interface MindRepository {
     fun addEpisode(episode: Episode): Episode
+
+    /** Write-ahead: persists the episode (empty reply, not ok) before Jarvis speaks. Returns its id. */
+    fun beginEpisode(timestampMs: Long, live: String, accurate: String, chosen: String): Long
+
+    /** Fills in the reply once spoken; outcome is ok unless the reply was an echo. */
+    fun completeEpisode(id: Long, reply: String, toolName: String?, toolArgsJson: String?, echoed: Boolean)
+
+    /** Episodes begun but never completed (empty reply) at or after [sinceMs]. */
+    fun listInterruptedEpisodes(sinceMs: Long): List<Episode>
     fun listUnreflectedEpisodes(limit: Int = 100): List<Episode>
     fun listRecentEpisodes(limit: Int = 100): List<Episode>
     fun markEpisodeSatisfactory(id: Long, outcomeOk: Boolean)
@@ -231,6 +240,47 @@ class InMemoryMindStore(
         val assigned = episode.copy(id = nextId++)
         episodes.add(assigned)
         assigned
+    }
+
+    override fun beginEpisode(timestampMs: Long, live: String, accurate: String, chosen: String): Long =
+        synchronized(lock) {
+            val id = nextId++
+            episodes.add(
+                Episode(
+                    id = id,
+                    timestampMs = timestampMs,
+                    liveTranscript = live,
+                    accurateTranscript = accurate,
+                    chosenTranscript = chosen,
+                    reply = "",
+                    outcomeOk = false,
+                    reflected = false,
+                )
+            )
+            id
+        }
+
+    override fun completeEpisode(
+        id: Long,
+        reply: String,
+        toolName: String?,
+        toolArgsJson: String?,
+        echoed: Boolean,
+    ) = synchronized(lock) {
+        val idx = episodes.indexOfFirst { it.id == id }
+        if (idx >= 0) {
+            episodes[idx] = episodes[idx].copy(
+                reply = reply,
+                toolName = toolName,
+                toolArgsJson = toolArgsJson,
+                echoed = echoed,
+                outcomeOk = !echoed,
+            )
+        }
+    }
+
+    override fun listInterruptedEpisodes(sinceMs: Long): List<Episode> = synchronized(lock) {
+        episodes.filter { it.reply == "" && it.timestampMs >= sinceMs }.sortedBy { it.timestampMs }
     }
 
     override fun listUnreflectedEpisodes(limit: Int): List<Episode> = synchronized(lock) {
@@ -914,6 +964,12 @@ class SqliteMindStore(
         )
     }
 
+    override fun onConfigure(db: SQLiteDatabase) {
+        super.onConfigure(db)
+        db.enableWriteAheadLogging()
+        db.execSQL("PRAGMA synchronous=NORMAL")
+    }
+
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
 
     override fun onOpen(db: SQLiteDatabase) {
@@ -1005,6 +1061,51 @@ class SqliteMindStore(
         }
         val id = db.insert("episodes", null, cv)
         return episode.copy(id = id)
+    }
+
+    override fun beginEpisode(timestampMs: Long, live: String, accurate: String, chosen: String): Long {
+        val cv = ContentValues().apply {
+            put("timestamp_ms", timestampMs)
+            put("live_transcript", live)
+            put("accurate_transcript", accurate)
+            put("chosen_transcript", chosen)
+            put("reply", "")
+            putNull("tool_name")
+            putNull("tool_args_json")
+            put("echoed", 0)
+            put("outcome_ok", 0)
+            put("reflected", 0)
+        }
+        return writableDatabase.insert("episodes", null, cv)
+    }
+
+    override fun completeEpisode(
+        id: Long,
+        reply: String,
+        toolName: String?,
+        toolArgsJson: String?,
+        echoed: Boolean,
+    ) {
+        val cv = ContentValues().apply {
+            put("reply", reply)
+            if (toolName != null) put("tool_name", toolName) else putNull("tool_name")
+            if (toolArgsJson != null) put("tool_args_json", toolArgsJson) else putNull("tool_args_json")
+            put("echoed", if (echoed) 1 else 0)
+            put("outcome_ok", if (echoed) 0 else 1)
+        }
+        writableDatabase.update("episodes", cv, "id = ?", arrayOf(id.toString()))
+    }
+
+    override fun listInterruptedEpisodes(sinceMs: Long): List<Episode> {
+        return readableDatabase.rawQuery(
+            "SELECT id, timestamp_ms, live_transcript, accurate_transcript, chosen_transcript, reply, tool_name, tool_args_json, echoed, outcome_ok, reflected " +
+                "FROM episodes WHERE reply = '' AND timestamp_ms >= ? ORDER BY timestamp_ms ASC",
+            arrayOf(sinceMs.toString()),
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) add(readEpisode(c))
+            }
+        }
     }
 
     override fun listUnreflectedEpisodes(limit: Int): List<Episode> {

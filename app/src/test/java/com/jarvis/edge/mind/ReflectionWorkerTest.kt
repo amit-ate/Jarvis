@@ -217,4 +217,17 @@ class ReflectionWorkerTest {
         assertEquals(1, badReport.episodesProcessed)
         assertEquals(0, badReport.factsLearned)
     }
+
+    @Test
+    fun `interrupted episode yields no facts`() {
+        val store = InMemoryMindStore()
+        val id = store.beginEpisode(1_000L, "my name is Amy", "my name is Amy", "my name is Amy")
+        val worker = ReflectionWorker(
+            store = store,
+            llmExtract = { """{"facts":["The user's name is Amy"],"vocab":[]}""" },
+        )
+        worker.reflectOnce()
+        assertEquals(0, store.countActiveFacts())
+        assertTrue(store.listUnreflectedEpisodes().none { it.id == id })
+    }
 }
