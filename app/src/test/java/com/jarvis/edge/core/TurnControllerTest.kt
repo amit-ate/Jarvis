@@ -312,4 +312,55 @@ class TurnControllerTest {
             speaker.spoken,
         )
     }
+
+    @Test
+    fun `respond callbacks skip sorry and confirmation prompts`() = runBlocking {
+        val started = mutableListOf<String>()
+        val sorry = TurnController(
+            segmenter = SpeechSegmenter(ScriptedVad(2), trailingSilenceMs = 64, noSpeechTimeoutMs = 200),
+            live = FakeLive(""),
+            accurate = object : Transcriber {
+                override fun transcribe(samples: FloatArray) = " "
+            },
+            brain = dummyBrain(),
+            speaker = FakeSpeaker(),
+            setState = {},
+            onRespondStart = { started.add(it) },
+        )
+        sorry.runTurn(dummyFrames())
+        val confirm = TurnController(
+            segmenter = SpeechSegmenter(ScriptedVad(2), trailingSilenceMs = 64),
+            live = QueueLive(ArrayDeque(listOf("tell about alpha beta"))),
+            accurate = object : Transcriber {
+                override fun transcribe(samples: FloatArray) = "explain quantum physics"
+            },
+            brain = dummyBrain(),
+            speaker = FakeSpeaker(),
+            setState = {},
+            onRespondStart = { started.add(it) },
+        )
+        confirm.runTurn(dummyFrames())
+        assertTrue(started.isEmpty())
+    }
+
+    @Test
+    fun `stopping mid-reply reports what was spoken so far`() = runBlocking {
+        val started = mutableListOf<String>()
+        val interrupted = mutableListOf<String>()
+        val tc = TurnController(
+            segmenter = SpeechSegmenter(ScriptedVad(2), trailingSilenceMs = 64),
+            live = FakeLive("talk"),
+            accurate = object : Transcriber {
+                override fun transcribe(samples: FloatArray) = "tell me something"
+            },
+            brain = dummyBrain("SAY: First sentence. Second sentence."),
+            speaker = FakeSpeaker(stopOnSentence = "First sentence."),
+            setState = {},
+            onRespondStart = { started.add(it) },
+            onRespondInterrupted = { interrupted.add(it) },
+        )
+        tc.runTurn(dummyFrames())
+        assertEquals(listOf("tell me something"), started)
+        assertEquals(listOf("First sentence."), interrupted.map { it.trim() })
+    }
 }

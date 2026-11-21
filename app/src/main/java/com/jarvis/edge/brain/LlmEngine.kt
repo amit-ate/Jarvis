@@ -1,6 +1,8 @@
 package com.jarvis.edge.brain
 
 import java.io.File
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 data class GenStats(
     val promptTokens: Int,
@@ -75,11 +77,14 @@ class LlamaJniEngine : LlmEngine {
 
     private val loadedLoras = LinkedHashSet<Long>()
 
+    /** One lock for every native call that touches the llama context; generate holds it for the whole decode. */
+    private val lock = ReentrantLock()
+
     override val isLoaded: Boolean
         get() = handle != 0L
 
     override fun load(modelFile: File, contextTokens: Int) {
-        synchronized(this) {
+        lock.withLock {
             if (handle != 0L) {
                 unload()
             }
@@ -112,6 +117,7 @@ class LlamaJniEngine : LlmEngine {
         sampling: SamplingConfig,
         onToken: (String) -> Boolean,
     ): GenStats {
+        return lock.withLock {
         val currentHandle = handle
         check(currentHandle != 0L) { "LlmEngine is not loaded" }
 
@@ -129,11 +135,12 @@ class LlamaJniEngine : LlmEngine {
             penalizeUserTokens = sampling.penalizeUserTokens,
             callback = TokenCallback { piece -> onToken(piece) },
         )
-        return parseGenStats(raw)
+        parseGenStats(raw)
+        }
     }
 
     override fun loadLoraAdapter(adapterFile: File): Long {
-        synchronized(this) {
+        lock.withLock {
             val h = handle
             if (h == 0L || !adapterFile.isFile || adapterFile.length() <= 0L) {
                 return 0L
@@ -147,7 +154,7 @@ class LlamaJniEngine : LlmEngine {
     }
 
     override fun setActiveLoraAdapters(adapters: List<Pair<Long, Float>>): Boolean {
-        synchronized(this) {
+        lock.withLock {
             val h = handle
             if (h == 0L) return false
             val valid = adapters.filter { it.first != 0L }
@@ -163,7 +170,7 @@ class LlamaJniEngine : LlmEngine {
         ilStart: Int,
         ilEnd: Int,
     ): Boolean {
-        synchronized(this) {
+        lock.withLock {
             val h = handle
             if (h == 0L) return false
             return nativeApplyControlVector(h, data, nEmbd, ilStart, ilEnd) == 0
@@ -171,7 +178,7 @@ class LlamaJniEngine : LlmEngine {
     }
 
     override fun modelGeometry(): Pair<Int, Int> {
-        synchronized(this) {
+        lock.withLock {
             val h = handle
             if (h == 0L) return 0 to 0
             val info = nativeModelInfo(h)
@@ -185,7 +192,7 @@ class LlamaJniEngine : LlmEngine {
         ilStart: Int,
         ilEnd: Int,
     ): FloatArray {
-        synchronized(this) {
+        lock.withLock {
             val h = handle
             if (h == 0L || positivePrompts.isEmpty() || negativePrompts.isEmpty()) {
                 return FloatArray(0)
@@ -200,16 +207,20 @@ class LlamaJniEngine : LlmEngine {
         }
     }
 
+    /** Never waits: returns false at once if a decode or other native call holds the context. */
     override fun saveState(file: File): Boolean {
-        synchronized(this) {
+        if (!lock.tryLock()) return false
+        try {
             val h = handle
             if (h == 0L) return false
             return nativeSaveState(h, file.absolutePath)
+        } finally {
+            lock.unlock()
         }
     }
 
     override fun loadState(file: File): Boolean {
-        synchronized(this) {
+        lock.withLock {
             val h = handle
             if (h == 0L || !file.isFile) return false
             return nativeLoadState(h, file.absolutePath)
@@ -217,7 +228,7 @@ class LlamaJniEngine : LlmEngine {
     }
 
     override fun unload() {
-        synchronized(this) {
+        lock.withLock {
             val h = handle
             handle = 0L
             if (h != 0L) {

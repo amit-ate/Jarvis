@@ -25,7 +25,13 @@ class TurnController(
     private val onTranscriptionDetail: (liveRaw: String, accurateRaw: String, chosen: String) -> Unit = { _, _, _ -> },
     private val onCorrectionConfirmed: (heard: String, meant: String) -> Unit = { _, _ -> },
     private val onSpeechActivity: () -> Unit = {},
+    /** Called just before the brain answers (not for confirmation prompts or "sorry" replies). */
+    private val onRespondStart: (transcript: String) -> Unit = {},
+    /** Called when the user stops the reply mid-speech; [spokenSoFar] is what was already said. */
+    private val onRespondInterrupted: (spokenSoFar: String) -> Unit = {},
 ) {
+    private val spokenSoFar = StringBuilder()
+
     private data class PendingConfirmation(
         val heardRaw: String,
         val candidate: String,
@@ -162,6 +168,7 @@ class TurnController(
 
             speakBrainResponse(transcript)
         } catch (_: StopSpeakingSignal) {
+            onRespondInterrupted(spokenSoFar.toString())
             // Stop speaking mid-response cleanly and return to IDLE.
         } finally {
             setState(AssistantState.IDLE)
@@ -170,6 +177,8 @@ class TurnController(
 
     private suspend fun speakBrainResponse(transcript: String) {
         var speakingStarted = false
+        spokenSoFar.setLength(0)
+        onRespondStart(transcript)
         brain.respond(transcript) { sentence ->
             if (speaker.isStopped) {
                 throw StopSpeakingSignal()
@@ -179,6 +188,7 @@ class TurnController(
                 speakingStarted = true
             }
             onReplyChunk(sentence)
+            spokenSoFar.append(sentence).append(' ')
             speaker.speak(sentence)
             if (speaker.isStopped) {
                 throw StopSpeakingSignal()

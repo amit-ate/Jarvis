@@ -474,11 +474,17 @@ class JarvisService : Service() {
                 "${expertRouter.activeExpertSummary(ExpertDomain.CONVERSATION)}#${mind.listModelVersions().firstOrNull { it.active }?.id ?: 0}",
             )
             // Single-flight guard shared with the evolution cycle; skipped whenever a turn is in flight.
+            // The state check is only a cheap pre-check: the engine lock is what keeps a save out of a decode
+            // (saveState uses tryLock and returns false when busy).
             fun saveKv(): Boolean {
                 if (!jniEngine.isLoaded || _state.value != AssistantState.IDLE) return false
                 if (!evolutionRunning.compareAndSet(false, true)) return false
                 return try {
-                    _state.value == AssistantState.IDLE && runCatching { kvManager.save(jniEngine, kvKey()) }.getOrDefault(false)
+                    // The key names the conversation adapter. If the last turn ran another domain's adapter the
+                    // cache was built under it, so skip rather than save it under the wrong key.
+                    _activeExpert.value == expertRouter.activeExpertSummary(ExpertDomain.CONVERSATION) &&
+                        _state.value == AssistantState.IDLE &&
+                        runCatching { kvManager.save(jniEngine, kvKey()) }.getOrDefault(false)
                 } finally {
                     evolutionRunning.set(false)
                 }
@@ -600,13 +606,24 @@ class JarvisService : Service() {
                 },
                 arbiter = TranscriptArbiter(),
                 correctionsProvider = { mind.listActiveCorrectionsMap() },
-                onTranscriptionDetail = { liveRaw, accurateRaw, chosen ->
+                onTranscriptionDetail = { liveRaw, accurateRaw, _ ->
                     lastLiveRaw = liveRaw
                     lastAccurateRaw = accurateRaw
-                    // Write the episode before the reply is spoken so an abrupt kill leaves a trace.
+                },
+                // Write the episode just before the brain answers so an abrupt kill leaves a trace.
+                onRespondStart = { chosen ->
+                    openEpisodeId?.let { prev ->
+                        runCatching { mind.completeEpisode(prev, "[abandoned]", null, null, true) }
+                    }
                     openEpisodeId = runCatching {
-                        mind.beginEpisode(System.currentTimeMillis(), liveRaw, accurateRaw, chosen)
+                        mind.beginEpisode(System.currentTimeMillis(), lastLiveRaw, lastAccurateRaw, chosen)
                     }.getOrNull()
+                },
+                onRespondInterrupted = { spoken ->
+                    openEpisodeId?.let { id ->
+                        openEpisodeId = null
+                        runCatching { mind.completeEpisode(id, spoken.trim().ifBlank { "[stopped]" }, null, null, true) }
+                    }
                 },
                 onCorrectionConfirmed = { heard, meant ->
                     mind.learnCorrection(heard, meant)
