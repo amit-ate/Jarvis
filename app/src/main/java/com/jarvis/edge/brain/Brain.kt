@@ -116,8 +116,9 @@ class Brain(
             val result = tools.run(fastCall)
             log("tool result: spoken=\"${result.spoken}\" feed=${result.feedToModel?.take(120)}")
             if (fastCall.name == "web_search" && !result.ok && engineReady) {
-                // Offline search: do not speak the failure; let the model answer from its own knowledge.
-                offlineNudge = OFFLINE_NUDGE
+                // Offline search: do not speak the failure; let the model answer from its own knowledge. No prompt note:
+                // the model read "[Rule: No internet...]" out loud; the confidence check covers unsure answers.
+                offlineNudge = ""
             } else {
                 // A tool that already produced a spoken sentence is spoken as it is. The model only
                 // summarizes a tool that gave data but no sentence, and only when it is usable.
@@ -197,17 +198,32 @@ class Brain(
                 return
             }
         }
+        if (HOW_ARE_YOU.containsMatchIn(userText.trim())) {
+            onSentence(HOW_ARE_YOU_REPLY)
+            recordTurn(userText, "SAY: $HOW_ARE_YOU_REPLY")
+            onEpisodeComplete(userText, HOW_ARE_YOU_REPLY, null, false)
+            return
+        }
+        if (looksGarbled(userText)) {
+            log("garbled input, not answering: \"$userText\"")
+            onSentence(DIDNT_CATCH_MSG)
+            onEpisodeComplete(userText, DIDNT_CATCH_MSG, null, false)
+            return
+        }
         val sampling = expertRouter?.selectAndActivate(userText, engine) ?: SamplingConfig()
         val turns = activeHistory()
         // Every sentence is checked before it is spoken: an echo of the user or a repeat of an earlier reply is
         // rejected; for a factual question, a low-confidence first sentence (a guess) is replaced by an honest
         // "not sure", and a low-confidence later sentence ends the reply.
-        val factual = EchoGuard.looksLikeFactualQuestion(userText)
+        val factual = EchoGuard.looksLikeFactualQuestion(userText) && !CHITCHAT.containsMatchIn(userText.trim())
         val gate: (Int, String, Confidence) -> Gate = { i, s, c ->
-            val repeat = repeatsHistory(s, turns)
+            val repeat = repeatsHistory(s, turns, userText)
             when {
                 i == 0 && (repeat || EchoGuard.isEcho(userText, s)) -> Gate.REJECT
-                i == 0 && factual && c.isUncertain() -> Gate.UNSURE
+                i == 0 && factual && (c.isUncertain() || PLACEHOLDER.containsMatchIn(s)) -> Gate.UNSURE
+                PLACEHOLDER.containsMatchIn(s) -> if (i == 0) Gate.UNSURE else Gate.TRUNCATE
+                // Very low confidence on the opening sentence means the model could not make sense of the input.
+                i == 0 && c.tokens >= 3 && c.score < VERY_UNSURE_SCORE -> Gate.UNSURE
                 i > 0 && (repeat || (factual && c.isUncertain()) || c.score < VERY_UNSURE_SCORE) -> Gate.TRUNCATE
                 else -> Gate.SPEAK
             }
@@ -217,7 +233,7 @@ class Brain(
             user = userText,
             selfStateLine = selfState,
             memoryContext = memoryContext,
-            extraNudge = offlineNudge,
+            extraNudge = offlineNudge?.ifBlank { null },
         )
         val t0 = clockMillis()
         val firstRun = streamSayOrCollectTool(
@@ -242,23 +258,23 @@ class Brain(
                 },
         )
         if (firstRun.abortedUnsure) {
-            val msg = unsureReply(heardConfidence, offline = offlineNudge != null)
+            val msg = if (factual) unsureReply(heardConfidence, offline = offlineNudge != null) else DIDNT_CATCH_MSG
             onSentence(msg)
-            recordTurn(userText, "SAY: $msg")
+            // Not recorded in history: the model copied "I'm not sure..." into later, unrelated answers.
             onEpisodeComplete(userText, msg, null, false)
             return
         }
         when (parsed) {
             is ModelOutput.Say -> {
-                val replyText = if (firstRun.truncated) firstRun.spokenText else parsed.text
+                val replyText = if (firstRun.truncated || firstRun.spokeAnything) firstRun.spokenText.ifBlank { stripPromptNotes(parsed.text) } else stripPromptNotes(parsed.text)
                 if (firstRun.spokeAnything) {
                     // Already said out loud: a retry would only talk over it. Keep what was spoken.
-                    val echoed = EchoGuard.isEcho(userText, replyText) || repeatsHistory(replyText, turns)
+                    val echoed = EchoGuard.isEcho(userText, replyText) || repeatsHistory(replyText, turns, userText)
                     if (!echoed) recordTurn(userText, "SAY: $replyText")
                     onEpisodeComplete(userText, replyText, null, echoed)
                     return
                 }
-                val repeats = repeatsHistory(replyText, turns)
+                val repeats = repeatsHistory(replyText, turns, userText)
                 val echoed = firstRun.abortedForEcho || replyText.isBlank() || EchoGuard.isEcho(userText, replyText) || repeats
                 if (!echoed) {
                     recordTurn(userText, "SAY: $replyText")
@@ -286,16 +302,15 @@ class Brain(
                         onSentence = onSentence,
                     )
                     if (retryRun.abortedUnsure) {
-                        val msg = unsureReply(heardConfidence, offline = offlineNudge != null)
+                        val msg = if (factual) unsureReply(heardConfidence, offline = offlineNudge != null) else DIDNT_CATCH_MSG
                         onSentence(msg)
-                        recordTurn(userText, "SAY: $msg")
                         onEpisodeComplete(userText, msg, null, false)
                         return
                     }
                     val retryParsed = parseModelOutput(retryRun.raw)
                     val retryText = if (retryRun.truncated) retryRun.spokenText else (retryParsed as? ModelOutput.Say)?.text.orEmpty()
                     if (!retryRun.abortedForEcho && retryText.isNotBlank() &&
-                        !EchoGuard.isEcho(userText, retryText) && !repeatsHistory(retryText, turns)
+                        !EchoGuard.isEcho(userText, retryText) && !repeatsHistory(retryText, turns, userText)
                     ) {
                         recordTurn(userText, "SAY: $retryText")
                         onEpisodeComplete(userText, retryText, null, false)
@@ -501,9 +516,14 @@ class Brain(
         val spoken = ArrayList<String>()
         val seen = ArrayList<Confidence>()
         try {
-            for ((sentence, conf) in sentences) {
+            for ((rawSentence, conf) in sentences) {
                 seen.add(conf)
-                val decision = gate?.invoke(index, sentence, conf) ?: Gate.SPEAK
+                // The small model sometimes reads out the bracketed context lines of its prompt; never speak those.
+                val sentence = stripPromptNotes(rawSentence)
+                if (sentence.isEmpty()) continue
+                // Judge the sentence with its "[Name]"-style slots still in place; speak it without brackets.
+                val judged = rawSentence.replace(PROMPT_NOTE, " ").replace(UNCLOSED_NOTE, " ").trim()
+                val decision = gate?.invoke(index, judged, conf) ?: Gate.SPEAK
                 index++
                 if (decision != Gate.SPEAK) {
                     when (decision) {
@@ -540,11 +560,16 @@ class Brain(
         )
     }
 
-    /** True when [reply] is a near-duplicate of any earlier assistant turn in [turns]. */
-    private fun repeatsHistory(reply: String, turns: List<Turn>): Boolean {
+    /**
+     * True when [reply] is a near-duplicate of an earlier assistant turn in [turns] that answered a different
+     * question. The same answer to the same question again is fine.
+     */
+    private fun repeatsHistory(reply: String, turns: List<Turn>, userText: String? = null): Boolean {
         val norm = normalizeForRepeat(reply)
         if (norm.isEmpty()) return false
+        val askedNow = userText?.let(::normalizeForRepeat)
         return turns.any { turn ->
+            if (askedNow != null && normalizeForRepeat(turn.user) == askedNow) return@any false
             val prev = stripSayPrefix(turn.assistant)
             normalizeForRepeat(prev) == norm || EchoGuard.isEcho(prev, reply)
         }
@@ -559,6 +584,17 @@ class Brain(
     private fun stripSayPrefix(text: String): String {
         val trimmed = text.trimStart()
         return if (trimmed.startsWith("SAY:", ignoreCase = true)) trimmed.substring(4).trimStart() else trimmed
+    }
+
+    private fun stripPromptNotes(text: String): String =
+        text.replace(PROMPT_NOTE, " ").replace(UNCLOSED_NOTE, " ").replace(Regex("""\[[^\[\]]*\[[^\]]*]+"""), " ")
+            .replace(Regex("""[\[\]]"""), " ").replace(Regex("\\s+"), " ").replace(Regex("\\s+([.,!?'])"), "$1").trim().let { if (it.any(Char::isLetterOrDigit)) it else "" }
+
+    /** A lone word that is not a greeting or a short reply is almost always a clipped or misheard request. */
+    private fun looksGarbled(text: String): Boolean {
+        val words = text.lowercase().replace(Regex("[^\\p{L}\\p{N}\\s']"), " ").trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (words.size >= 2 && words.all { it.length <= 2 }) return true // "S. L. M."
+        return words.size == 1 && words[0] !in SINGLE_WORD_OK
     }
 
     private fun unsureReply(heardConfidence: Float, offline: Boolean): String = when {
@@ -609,10 +645,25 @@ class Brain(
         const val ECHO_FALLBACK_MSG = "I'm not sure how to answer that yet."
         /** Below this, speech recognition probably got words wrong: ask the user to repeat rather than say "not sure". */
         private const val HEARD_UNSURE = 0.5f
+        const val DIDNT_CATCH_MSG = "Sorry, I didn't catch that. Could you say it again?"
+        private val PROMPT_NOTE = Regex("""\[(?:Rule|Memory|Phone status|Battery)[^\]]*]""", RegexOption.IGNORE_CASE)
+        private val UNCLOSED_NOTE = Regex("""\[(?:Rule|Memory|Phone status|Battery)[^\]]*$""", RegexOption.IGNORE_CASE)
+        /** Template slots like "[Name]" mean the model had no real answer. */
+        private val PLACEHOLDER = Regex("""\[[A-Za-z ]{2,20}(]|$)""")
+        private val HOW_ARE_YOU = Regex("""^(hi |hello |hey )?(jarvis,? )?(how are you|how's it going|how are you doing|how do you do)\b""", RegexOption.IGNORE_CASE)
+        const val HOW_ARE_YOU_REPLY = "I'm doing well, thanks for asking. How can I help?"
+        /** Questions about the conversation or Jarvis itself, not facts about the world. */
+        private val CHITCHAT = Regex(
+            """^(tell me (a|another) (joke|story)|tell me something|say something|sing|how are you|how's it going|how do you do|how have you been|what's up|whats up|what are you doing|who are you|what can you do|what do you think|do you like|are you)\b""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val SINGLE_WORD_OK = setOf(
+            "hi", "hello", "hey", "thanks", "thank", "bye", "goodbye", "yes", "no", "okay", "ok", "sure",
+            "great", "cool", "nice", "good", "help", "jarvis", "stop", "why", "really", "what",
+        )
         /** A later sentence this unsure is cut even in chat (the model is rambling). */
         private const val VERY_UNSURE_SCORE = 0.35f
         private const val ANTI_ECHO_NUDGE = "Do NOT repeat the user's words. Answer directly."
-        private const val OFFLINE_NUDGE = "No internet. Answer from your own knowledge in one sentence; if unsure, say you are not sure."
         private val RETRY_SAMPLING = SamplingConfig(
             temperature = 0.72f,
             repeatPenalty = 1.32f,

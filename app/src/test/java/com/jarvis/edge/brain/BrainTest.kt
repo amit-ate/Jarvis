@@ -479,7 +479,7 @@ class BrainTest {
     }
 
     @Test
-    fun `failed web search is not spoken and the model answers with the no-internet rule`() = runBlocking {
+    fun `failed web search is not spoken and the model answers from its own knowledge`() = runBlocking {
         val searchTool = object : Tool {
             override val name = "web_search"
             override val description = "Search web"
@@ -498,7 +498,8 @@ class BrainTest {
         val spoken = mutableListOf<String>()
         brain.respond("who is the president of france") { spoken.add(it) }
         assertEquals(1, fakeLlm.calls)
-        assertTrue(fakeLlm.prompts[0].contains("No internet."))
+        // No bracketed rule in the prompt: the model read it out loud.
+        assertFalse(fakeLlm.prompts[0].contains("No internet."))
         assertEquals(listOf("I believe that is a politician."), spoken)
     }
 
@@ -634,5 +635,143 @@ class BrainTest {
         assertEquals(listOf("Rao Ghani" to "Rahul Gandhi"), learned)
         assertEquals(listOf("Rahul Gandhi's sister is Priyanka"), facts.statements)
         assertEquals(listOf("Got it, Rahul Gandhi.", "Thanks, I'll remember that Rahul Gandhi's sister is Priyanka."), out)
+    }
+
+    @Test
+    fun `placeholder answer is treated as unsure`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.9) }) { _, _, _, onToken ->
+            onToken("SAY: His sister is ")
+            onToken("[Name].")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("Who is Rahul Gandhi's sister?") { out.add(it) }
+        assertEquals(1, out.size)
+        assertTrue(out[0].startsWith("I'm not sure"), out[0])
+    }
+
+    @Test
+    fun `a lone garbled word is not sent to the model`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: No, I'm not sure about that.") }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("This.") { out.add(it) }
+        assertEquals(listOf(Brain.DIDNT_CATCH_MSG), out)
+        assertEquals(0, fakeLlm.calls)
+        brain.respond("Hello") { }
+        assertEquals(1, fakeLlm.calls)
+    }
+
+    @Test
+    fun `answer that restates the question is not an echo`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.9) }) { _, _, _, onToken ->
+            onToken("SAY: The capital of France ")
+            onToken("is Paris.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("What is the capital of France?") { out.add(it) }
+        assertEquals("The capital of France is Paris.", out.joinToString(" "))
+        assertEquals(1, fakeLlm.calls)
+    }
+
+    @Test
+    fun `chit-chat question is not held to the factual confidence bar`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.3) }) { _, _, _, onToken ->
+            onToken("SAY: I think cats ")
+            onToken("are wonderful.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("What do you think about cats?") { out.add(it) }
+        assertEquals("I think cats are wonderful.", out.joinToString(" "))
+    }
+
+    @Test
+    fun `bracketed prompt notes are never spoken`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.9) }) { _, _, _, onToken ->
+            onToken("SAY: [Rule: No internet.")
+            onToken(" Paris is lovely.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("tell me a joke") { out.add(it) }
+        assertTrue(out.none { it.contains("[") || it.contains("Rule") }, out.toString())
+        assertTrue(out.joinToString(" ").contains("Paris is lovely."), out.toString())
+    }
+
+    @Test
+    fun `same answer to the same question again is not a repeat`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.9) }) { _, _, _, onToken ->
+            onToken("SAY: Priyanka is ")
+            onToken("Rahul Gandhi's sister.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        brain.respond("Who is Rahul Gandhi's sister?") { }
+        val out = mutableListOf<String>()
+        brain.respond("Who is Rahul Gandhi's sister?") { out.add(it) }
+        assertEquals("Priyanka is Rahul Gandhi's sister.", out.joinToString(" "))
+        assertEquals(2, fakeLlm.calls)
+    }
+
+    @Test
+    fun `unclosed placeholder is treated as unsure`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.9) }) { _, _, _, onToken ->
+            onToken("SAY: The president was ")
+            onToken("[Name")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("Who was the president of Zubrovia in 1820?") { out.add(it) }
+        assertEquals(1, out.size)
+        assertTrue(out[0].startsWith("I'm not sure"), out[0])
+    }
+
+    @Test
+    fun `very unsure reply to a chat input asks the user to repeat`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.1) }) { _, _, _, onToken ->
+            onToken("SAY: Okay,")
+            onToken(" do you")
+            onToken(" remember?")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("The road Romeo and Juliette") { out.add(it) }
+        assertEquals(listOf(Brain.DIDNT_CATCH_MSG), out)
+    }
+
+    @Test
+    fun `single letters are garbled and how are you is answered directly`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Hmm.") }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val a = mutableListOf<String>()
+        brain.respond("S. L. M.") { a.add(it) }
+        assertEquals(listOf(Brain.DIDNT_CATCH_MSG), a)
+        val b = mutableListOf<String>()
+        brain.respond("How are you today?") { b.add(it) }
+        assertEquals(listOf(Brain.HOW_ARE_YOU_REPLY), b)
+        assertEquals(0, fakeLlm.calls)
+    }
+
+    @Test
+    fun `nested bracket fragments are removed`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.9) }) { _, _, _, onToken ->
+            onToken("SAY: Juliet's [Memory[heart]] ")
+            onToken("is lovely.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("tell me a joke") { out.add(it) }
+        assertTrue(out.none { it.contains("[") || it.contains("]") }, out.toString())
     }
 }

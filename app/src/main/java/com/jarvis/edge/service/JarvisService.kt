@@ -616,7 +616,9 @@ class JarvisService : Service() {
                     android.util.Log.i("JarvisTurn", "SAID: \"$r\"")
                     _reply.value = r
                 },
-                arbiter = TranscriptArbiter(),
+                // No "Did you say ...?" round-trip: the streaming model disagrees with the accurate one on most correct
+                // transcripts, so it asked about good ones. Brain's confidence check handles unsure answers instead.
+                arbiter = TranscriptArbiter(confirmWerThreshold = 2f),
                 correctionsProvider = { mind.listActiveCorrectionsMap() },
                 onTranscriptionDetail = { liveRaw, accurateRaw, _ ->
                     lastLiveRaw = liveRaw

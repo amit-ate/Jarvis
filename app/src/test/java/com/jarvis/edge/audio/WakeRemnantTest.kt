@@ -18,6 +18,14 @@ class WakeRemnantTest {
     }
 
     @Test
+    fun dropsStrayFragmentBeforeRequest() {
+        assertEquals("WHAT DO YOU KNOW ABOUT ME", WakeRemnant.clean("Y WHAT DO YOU KNOW ABOUT ME"))
+        assertEquals("is it raining", WakeRemnant.clean("s is it raining"))
+        assertEquals("I want tea", WakeRemnant.clean("I want tea"))
+        assertEquals("so what is that", WakeRemnant.clean("so what is that"))
+    }
+
+    @Test
     fun leavesNormalSpeechAlone() {
         assertEquals("Is it raining", WakeRemnant.clean("Is it raining"))
         assertEquals("visit my mom", WakeRemnant.clean("visit my mom"))

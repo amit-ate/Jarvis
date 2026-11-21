@@ -143,9 +143,12 @@ class TurnController(
                 liveRaw = arb.liveRaw
                 accurateRaw = arb.accurateRaw
                 transcript = arb.chosen.trim()
+                // The streaming model is much weaker than the accurate one, so its disagreement is weak evidence:
+                // only a missing accurate transcript makes the words really doubtful.
                 heardConfidence = when {
-                    arb.accurateRaw.isBlank() -> 0.4f // only the weaker streaming guess
-                    else -> (1f - arb.wordErrorRate).coerceIn(0f, 1f)
+                    arb.accurateRaw.isBlank() -> 0.4f
+                    arb.wordErrorRate < 0.3f -> 1f
+                    else -> 0.8f
                 }
 
                 if (arb.needsConfirmation && transcript.length >= 2) {
@@ -155,7 +158,7 @@ class TurnController(
                         heardRaw = liveRaw.ifBlank { accurateRaw },
                         candidate = transcript,
                     )
-                    val confirmPrompt = "Did you say $transcript?"
+                    val confirmPrompt = "Did you say ${transcript.trimEnd('.', '?', '!', ',')}?"
                     setState(AssistantState.SPEAKING)
                     onReplyChunk(confirmPrompt)
                     speaker.speak(confirmPrompt)

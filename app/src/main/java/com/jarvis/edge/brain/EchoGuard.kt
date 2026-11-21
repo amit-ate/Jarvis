@@ -21,6 +21,8 @@ object EchoGuard {
         "explain ", "define ", "describe ", "name ", "list ", "tell me ",
     )
 
+    private val QUESTION_WORDS = setOf("what", "who", "where", "when", "why", "how", "which", "whose", "whom")
+
     private val NON_FACTUAL_PHRASES = setOf(
         "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
         "good night", "bye", "goodbye", "thanks", "thank you", "ok", "okay", "yes", "no",
@@ -58,6 +60,13 @@ object EchoGuard {
             ) {
                 return true
             }
+
+            // An answer to a question restates it and adds the answer ("What is the capital of France?" ->
+            // "The capital of France is Paris."): a statement with new content words is not an echo.
+            val userAsks = userWords.first() in QUESTION_WORDS || userText.trim().endsWith("?")
+            val replyAsks = replyWords.first() in QUESTION_WORDS || stripSayPrefix(replyText).trim().endsWith("?")
+            val newContentWords = replyWords.filter { it !in STOPWORDS }.toSet() - userWords.filter { it !in STOPWORDS }.toSet()
+            if (userAsks && !replyAsks && newContentWords.isNotEmpty()) return false
 
             // 3. Word Jaccard >= 0.62f for >= 2 words.
             val userSet = userWords.toSet()
