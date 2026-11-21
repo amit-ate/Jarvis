@@ -1,5 +1,6 @@
 package com.jarvis.edge.mind
 
+import com.jarvis.edge.core.AtomicFiles
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -138,13 +139,7 @@ class BrainEvolver(
             buffer.putFloat(value)
         }
 
-        file.parentFile?.mkdirs()
-        val tmp = File(file.parentFile ?: File("."), ".${file.name}.tmp")
-        tmp.writeBytes(buffer.array())
-        if (!tmp.renameTo(file)) {
-            file.writeBytes(buffer.array())
-            tmp.delete()
-        }
+        AtomicFiles.write(file, buffer.array())
     }
 
     fun evolveOnce(

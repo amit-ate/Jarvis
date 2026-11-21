@@ -1,5 +1,6 @@
 package com.jarvis.edge.brain
 
+import com.jarvis.edge.core.AtomicFiles
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -79,16 +80,7 @@ object ControlVectorCodec {
             buf.putFloat(v)
         }
 
-        val parent = file.parentFile
-        if (parent != null && !parent.exists()) {
-            parent.mkdirs()
-        }
-        val tmp = File(parent ?: File("."), "${file.name}.tmp")
-        tmp.writeBytes(buf.array())
-        if (!tmp.renameTo(file)) {
-            file.writeBytes(buf.array())
-            tmp.delete()
-        }
+        AtomicFiles.write(file, buf.array())
     }
 
     fun read(file: File): ControlVector? {

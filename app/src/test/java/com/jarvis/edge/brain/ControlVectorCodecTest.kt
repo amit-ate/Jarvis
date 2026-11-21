@@ -2,6 +2,7 @@ package com.jarvis.edge.brain
 
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
@@ -33,6 +34,7 @@ class ControlVectorCodecTest {
         )
 
         ControlVectorCodec.write(file, vec)
+        assertFalse(File(file.parentFile, "test_expert.jvec.tmp").exists())
 
         val raw = file.readBytes()
         assertEquals(24 + data.size * 4, raw.size)
