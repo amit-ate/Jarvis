@@ -29,6 +29,8 @@ import com.jarvis.edge.brain.EmbeddingEngine
 import com.jarvis.edge.brain.ExpertDomain
 import com.jarvis.edge.brain.ExpertRouter
 import com.jarvis.edge.brain.FastIntents
+import com.jarvis.edge.brain.KvRestoreResult
+import com.jarvis.edge.brain.KvStateManager
 import com.jarvis.edge.brain.LlamaEmbeddingEngine
 import com.jarvis.edge.brain.LlamaJniEngine
 import com.jarvis.edge.brain.LlmEngine
@@ -62,10 +64,13 @@ import com.jarvis.edge.mind.MindStatusTool
 import com.jarvis.edge.mind.ModelVersion
 import com.jarvis.edge.mind.OnDeviceEvalGate
 import com.jarvis.edge.mind.ReflectionWorker
+import com.jarvis.edge.mind.Recovery
 import com.jarvis.edge.mind.RemindTool
 import com.jarvis.edge.mind.SelfModel
 import com.jarvis.edge.mind.SqliteMindStore
 import com.jarvis.edge.mind.VectorMath
+import com.jarvis.edge.mind.WorkingState
+import com.jarvis.edge.mind.WorkingStateStore
 import com.jarvis.edge.tools.BatteryStatusTool
 import com.jarvis.edge.tools.CancelTimersTool
 import com.jarvis.edge.tools.GetDateTool
@@ -95,6 +100,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -133,6 +140,12 @@ class JarvisService : Service() {
     private val initiativeSpeaking = AtomicBoolean(false)
     private val evolutionRunning = AtomicBoolean(false)
 
+    // Checkpoint hooks installed once the pipeline is built; used by onTrimMemory/onDestroy.
+    @Volatile private var saveWorkingStateFn: (() -> Unit)? = null
+    @Volatile private var saveKvFn: (() -> Boolean)? = null
+    @Volatile private var recovery: Recovery? = null
+    @Volatile private var openEpisodeId: Long? = null
+
     @Volatile private var lastInteractionMs: Long = System.currentTimeMillis()
     @Volatile private var lastReflectionMs: Long = 0L
     @Volatile private var lastLiveRaw: String = ""
@@ -161,8 +174,24 @@ class JarvisService : Service() {
         return START_STICKY
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= TRIM_MEMORY_RUNNING_LOW) {
+            serviceScope.launch(Dispatchers.IO) {
+                runCatching { saveWorkingStateFn?.invoke() }
+                runCatching { saveKvFn?.invoke() }
+            }
+        }
+    }
+
     override fun onDestroy() {
         isRunning = false
+        // Checkpoint while the mind and model are still open; the KV save is bounded to 2 s.
+        runCatching { saveWorkingStateFn?.invoke() }
+        val kvSave = saveKvFn?.let { save -> Thread { runCatching { save() } }.apply { start() } }
+        kvSave?.join(KV_SAVE_TIMEOUT_MS)
+        val kvSaveStuck = kvSave?.isAlive == true
+        runCatching { recovery?.onCleanStop() }
         MindUiBridge.actions = null
         reflectionJob?.cancel()
         initiativeJob?.cancel()
@@ -175,7 +204,7 @@ class JarvisService : Service() {
         runCatching { accurateTranscriber?.release() }
         runCatching { vad?.release() }
         runCatching { turnVad?.release() }
-        runCatching { llmEngine?.unload() }
+        if (!kvSaveStuck) runCatching { llmEngine?.unload() }
         runCatching { embeddingEngine?.unload() }
         runCatching { mindStore?.close() }
         runCatching { cameraSnapshot?.shutdown() }
@@ -201,6 +230,17 @@ class JarvisService : Service() {
 
             val healthGuard = HealthGuard.fromAndroidContext(this@JarvisService)
             val mind = SqliteMindStore(this@JarvisService).also { mindStore = it }
+            val adaptersDir = File(paths.root, "adapters")
+            val kvDir = File(filesDir, "kv")
+            val recoveryHelper = Recovery(repo = mind, adaptersDir = adaptersDir, kvDir = kvDir, clockMs = System::currentTimeMillis)
+                .also { recovery = it }
+            val recoveryReport = recoveryHelper.onStart()
+            val recoveredAtMs: Long? = if (recoveryReport.unclean) System.currentTimeMillis() else null
+            android.util.Log.i(
+                "JarvisMind",
+                "Recovery: unclean=${recoveryReport.unclean} interrupted=${recoveryReport.interruptedEpisodes} " +
+                    "orphans=${recoveryReport.orphansRemoved} temps=${recoveryReport.tempsRemoved}",
+            )
             if (mind.listModelVersions().isEmpty()) {
                 mind.recordModelVersion(
                     baseModel = paths.llmFileName,
@@ -312,7 +352,6 @@ class JarvisService : Service() {
                 startStatus = "Missing ${paths.llmRelative()} — basic commands only"
             }
 
-            val adaptersDir = File(paths.root, "adapters")
             val expertRouter = ExpertRouter.fromManifestFile(File(adaptersDir, "experts.json"), adaptersDir)
             fun applyModelVersionToRouter(version: ModelVersion?) {
                 val rawPath = version?.adapterPath?.takeIf { it.isNotBlank() }
@@ -338,6 +377,7 @@ class JarvisService : Service() {
                 nearProximityProvider = { latestNearProximity },
                 lastMotionMsProvider = { latestMotionMs },
                 lastReflectionMsProvider = { lastReflectionMs },
+                recoveredAtMsProvider = { recoveredAtMs },
             )
 
             if (loadedEmbedDim > 0) {
@@ -377,6 +417,8 @@ class JarvisService : Service() {
                 null
             }
 
+            // Set once the KV manager exists (it needs the prompt builder, built after the tools).
+            var onVersionChanged: () -> Unit = {}
             val announceLook: suspend () -> Unit = { ttsSpeaker.speak("Let me take a look.") }
             val tools = listOf(
                 GetTimeTool(),
@@ -399,6 +441,7 @@ class JarvisService : Service() {
                     onMuteRequested = { durationMs -> initiativeEngine.muteFor(durationMs) },
                     onVersionActivated = { rolledBack ->
                         applyModelVersionToRouter(rolledBack)
+                        onVersionChanged()
                         if (jniEngine.isLoaded && _state.value == AssistantState.IDLE) {
                             runCatching { expertRouter.selectAndActivate("", jniEngine) }
                         }
@@ -424,9 +467,32 @@ class JarvisService : Service() {
             )
             val registry = ToolRegistry(tools)
             val prompts = PromptBuilder(tools, templateName = "chatml")
+            val kvManager = KvStateManager(kvDir)
+            fun kvKey(): String = kvManager.key(
+                llmFile,
+                prompts.system(),
+                "${expertRouter.activeExpertSummary(ExpertDomain.CONVERSATION)}#${mind.listModelVersions().firstOrNull { it.active }?.id ?: 0}",
+            )
+            // Single-flight guard shared with the evolution cycle; skipped whenever a turn is in flight.
+            fun saveKv(): Boolean {
+                if (!jniEngine.isLoaded || _state.value != AssistantState.IDLE) return false
+                if (!evolutionRunning.compareAndSet(false, true)) return false
+                return try {
+                    _state.value == AssistantState.IDLE && runCatching { kvManager.save(jniEngine, kvKey()) }.getOrDefault(false)
+                } finally {
+                    evolutionRunning.set(false)
+                }
+            }
+            onVersionChanged = { runCatching { kvManager.pruneExcept(kvKey()) } }
+            saveKvFn = ::saveKv
             if (jniEngine.isLoaded) {
                 runCatching {
                     expertRouter.selectAndActivate("", jniEngine)
+                    val kvResult = kvManager.restore(jniEngine, kvKey())
+                    android.util.Log.i("JarvisMind", "KV restore: $kvResult")
+                    if (kvResult == KvRestoreResult.REJECTED) {
+                        mind.recordRecoveryJournal("Discarded an unusable saved model memory; rebuilt it from text.")
+                    }
                     jniEngine.generate(prompts.prompt(emptyList(), "hi"), prompts.sayOnlyGrammar(), maxTokens = 1) { false }
                 }
             }
@@ -449,7 +515,11 @@ class JarvisService : Service() {
                 onEpisodeComplete = { userText, reply, toolCall, echoed ->
                     _activeExpert.value = expertRouter.activeExpertSummary(expertRouter.classify(userText))
                     val argsJson = toolCall?.let { JSONObject(it.args).toString() }
-                    mind.addEpisode(
+                    val openId = openEpisodeId
+                    openEpisodeId = null
+                    if (openId != null) {
+                        mind.completeEpisode(openId, reply, toolCall?.name, argsJson, echoed)
+                    } else mind.addEpisode(
                         Episode(
                             timestampMs = System.currentTimeMillis(),
                             liveTranscript = lastLiveRaw,
@@ -464,7 +534,10 @@ class JarvisService : Service() {
                     )
                     lastLiveRaw = ""
                     lastAccurateRaw = ""
-                    serviceScope.launch(Dispatchers.IO) { publishMindState(mind, selfModel) }
+                    serviceScope.launch(Dispatchers.IO) {
+                        runCatching { saveWorkingStateFn?.invoke() }
+                        publishMindState(mind, selfModel)
+                    }
                 },
             )
 
@@ -527,9 +600,13 @@ class JarvisService : Service() {
                 },
                 arbiter = TranscriptArbiter(),
                 correctionsProvider = { mind.listActiveCorrectionsMap() },
-                onTranscriptionDetail = { liveRaw, accurateRaw, _ ->
+                onTranscriptionDetail = { liveRaw, accurateRaw, chosen ->
                     lastLiveRaw = liveRaw
                     lastAccurateRaw = accurateRaw
+                    // Write the episode before the reply is spoken so an abrupt kill leaves a trace.
+                    openEpisodeId = runCatching {
+                        mind.beginEpisode(System.currentTimeMillis(), liveRaw, accurateRaw, chosen)
+                    }.getOrNull()
                 },
                 onCorrectionConfirmed = { heard, meant ->
                     mind.learnCorrection(heard, meant)
@@ -543,6 +620,40 @@ class JarvisService : Service() {
                     lastInteractionMs = System.currentTimeMillis()
                 },
             )
+
+            val workingStateStore = WorkingStateStore(mind)
+            saveWorkingStateFn = {
+                val (turns, lastTurnMs) = brain.snapshotHistory()
+                val pending = turnController.snapshotPending()
+                workingStateStore.save(
+                    WorkingState(
+                        savedAtMs = System.currentTimeMillis(),
+                        history = turns,
+                        lastTurnMs = lastTurnMs,
+                        pendingHeard = pending?.first,
+                        pendingCandidate = pending?.second,
+                        initiativeMutedUntilMs = initiativeEngine.mutedUntilMs(),
+                        openEpisodeId = openEpisodeId,
+                    ),
+                )
+            }
+            workingStateStore.load()?.let { ws ->
+                brain.restoreHistory(ws.history, ws.lastTurnMs)
+                val heard = ws.pendingHeard
+                val candidate = ws.pendingCandidate
+                if (heard != null && candidate != null) turnController.restorePending(heard, candidate)
+                initiativeEngine.restoreMute(ws.initiativeMutedUntilMs)
+            }
+
+            // Save the model memory 3 s after the assistant returns to IDLE with no new turn.
+            launch(Dispatchers.IO) {
+                _state.collectLatest { s ->
+                    if (s == AssistantState.IDLE) {
+                        delay(KV_IDLE_SAVE_DELAY_MS)
+                        withContext(Dispatchers.Default) { saveKv() }
+                    }
+                }
+            }
 
             val evalGate = OnDeviceEvalGate()
             val brainEvolver = BrainEvolver()
@@ -607,6 +718,7 @@ class JarvisService : Service() {
                         isInterrupted = { _state.value != AssistantState.IDLE },
                     )
                     applyModelVersionToRouter(mind.listModelVersions().firstOrNull { it.active })
+                    onVersionChanged()
                     if (activeLlm.isLoaded && _state.value == AssistantState.IDLE) {
                         runCatching { expertRouter.selectAndActivate("", activeLlm) }
                     }
@@ -668,6 +780,7 @@ class JarvisService : Service() {
                         val ok = mind.activateModelVersion(id)
                         val active = mind.listModelVersions().firstOrNull { it.active }
                         applyModelVersionToRouter(active)
+                        onVersionChanged()
                         if (activeLlm != null && activeLlm.isLoaded && _state.value == AssistantState.IDLE) {
                             runCatching { expertRouter.selectAndActivate("", activeLlm) }
                         }
@@ -818,6 +931,7 @@ class JarvisService : Service() {
                             idleMs = idleMs,
                             recentPresenceEvent = recentPresence,
                             newLearningsToday = learningsToday,
+                            unexpectedShutdown = recoveryReport.unclean,
                         )
                     ) ?: continue
 
@@ -1068,6 +1182,8 @@ class JarvisService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val WATCHDOG_REQ_CODE = 3001
         private const val WATCHDOG_INTERVAL_MS = 45_000L
+        private const val KV_SAVE_TIMEOUT_MS = 2_000L
+        private const val KV_IDLE_SAVE_DELAY_MS = 3_000L
         private const val REFLECTION_IDLE_MS = 10L * 60_000L
         private val LEARNING_TYPES = setOf("fact", "vocab", "correction", "shortcut")
 

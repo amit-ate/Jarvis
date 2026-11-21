@@ -143,4 +143,28 @@ class InitiativeEngineTest {
         )
         assertNull(a4)
     }
+
+    @Test
+    fun `announces an unexpected shutdown once when the user is present and not in quiet hours`() {
+        val now = 50_000_000L
+        var hour = 2
+        val store = InMemoryMindStore(clockMs = { now })
+        val engine = InitiativeEngine(store = store, clockMs = { now }, hourOfDayProvider = { hour })
+        val snap = SelfStateSnapshot(batteryTempC = 30f, batteryPct = 80)
+        fun input(present: Boolean) = InitiativeEngine.InitiativeInput(
+            isIdle = true,
+            snapshot = snap,
+            recentPresenceEvent = present,
+            unexpectedShutdown = true,
+        )
+
+        assertNull(engine.evaluate(input(present = true))) // quiet hours
+        hour = 10
+        assertNull(engine.evaluate(input(present = false))) // nobody around
+        val action = engine.evaluate(input(present = true))
+        assertNotNull(action)
+        assertEquals("recovery_notice", action!!.type)
+        assertEquals("I was shut down unexpectedly, but I've restored where we were.", action.spoken)
+        assertNull(engine.evaluate(input(present = true))) // only once
+    }
 }

@@ -20,6 +20,7 @@ class InitiativeEngine(
         val idleMs: Long = 0L,
         val recentPresenceEvent: Boolean = false,
         val newLearningsToday: Int = 0,
+        val unexpectedShutdown: Boolean = false,
     )
 
     data class InitiativeAction(
@@ -35,6 +36,7 @@ class InitiativeEngine(
     private var lastLowBatteryWarningMs: Long = Long.MIN_VALUE / 2
     private var lastGreetingMs: Long = Long.MIN_VALUE / 2
     private var lastRecapMs: Long = Long.MIN_VALUE / 2
+    private var recoveryNoticeGiven = false
 
     fun mutedUntilMs(): Long = muteUntilMs
 
@@ -91,6 +93,17 @@ class InitiativeEngine(
             val spoken = "My battery is down to ${input.snapshot.batteryPct} percent. Please plug me in soon."
             store.recordInitiativeJournal("Low battery warning (${input.snapshot.batteryPct}%)")
             return InitiativeAction(type = "low_battery", spoken = spoken)
+        }
+
+        // 2b. Tell the user once that the previous run ended abruptly.
+        if (input.unexpectedShutdown && input.recentPresenceEvent && !recoveryNoticeGiven) {
+            recoveryNoticeGiven = true
+            recordFired(now)
+            store.recordInitiativeJournal("Told user about the unexpected shutdown")
+            return InitiativeAction(
+                type = "recovery_notice",
+                spoken = "I was shut down unexpectedly, but I've restored where we were.",
+            )
         }
 
         // 3. Greeting after long absence (>= 4h) when presence is detected.
