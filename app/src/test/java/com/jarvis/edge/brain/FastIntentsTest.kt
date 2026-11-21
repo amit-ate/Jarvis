@@ -114,4 +114,27 @@ class FastIntentsTest {
         assertNull(FastIntents.match("what time does the moon rise in Tokyo"))
         assertNull(FastIntents.match("tell me a joke about timers"))
     }
+
+    @Test
+    fun `battery with possessive my`() {
+        assertEquals(ToolCall("battery_status", emptyMap()), FastIntents.match("How is my battery?"))
+        assertEquals(ToolCall("battery_status", emptyMap()), FastIntents.match("What's my battery level?"))
+        assertEquals(ToolCall("battery_status", emptyMap()), FastIntents.match("check my battery"))
+        assertEquals(ToolCall("battery_status", emptyMap()), FastIntents.match("How much battery do I have?"))
+    }
+
+    @Test
+    fun `learned today with filler and did or do`() {
+        val learned = ToolCall("mind_status", mapOf("action" to "learned_today"))
+        assertEquals(learned, FastIntents.match("That's what I am asking. What did you learn today?"))
+        assertEquals(learned, FastIntents.match("I was saying, what do you learn today?"))
+        assertEquals(learned, FastIntents.match("What did you learn"))
+        assertEquals(learned, FastIntents.match("What have you learnt today?"))
+    }
+
+    @Test
+    fun `unrelated speech with filler returns null`() {
+        assertNull(FastIntents.match("I was saying hello to my friend"))
+        assertNull(FastIntents.match("tell me a joke"))
+    }
 }

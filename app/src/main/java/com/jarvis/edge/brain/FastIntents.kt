@@ -59,7 +59,7 @@ object FastIntents {
         "|^((?:dim\\s+(?:the\\s+)?screen|(?:make\\s+it\\s+|screen\\s+)?dimmer|(?:decrease|(?:turn|bring)\\s+down)\\s+(?:the\\s+)?(?:screen\\s+)?brightness|(?:turn|bring)\\s+(?:the\\s+)?(?:screen\\s+)?brightness\\s+down))$"
     )
     private val batteryRegex = Regex(
-        "^(?:(?:what(?:'s| is)?|check|how(?:'s| is))\\s+(?:the |your )?battery(?: level| status| percentage| percent| temp| temperature)?|battery(?: level| status| percentage| percent)?|how much battery(?: (?:is |do i have )?left)?)$"
+        "^(?:(?:what(?:'s| is)?|check|how(?:'s| is))\\s+(?:the |your |my )?battery(?: level| status| percentage| percent| temp| temperature)?|battery(?: level| status| percentage| percent)?|how much battery(?: (?:is |do i have )?left| do i have)?)$"
     )
     private val rememberRegex = Regex(
         "^(?:remember(?: that)?|save (?:a )?note(?: that)?|take a note(?: that)?|note(?: that)?)\\s+(.+)$"
@@ -74,7 +74,7 @@ object FastIntents {
         "^(?:forget(?: about)?|delete (?:the )?(?:memory|note|fact)(?: about)?)\\s+(.+)$"
     )
     private val learnedTodayRegex = Regex(
-        "^(?:what did you learn(?: today)?|what have you learned(?: today)?|recent learnings|show learnings)$"
+        "^(?:what (?:did you learn|do you learn(?:ed)?)(?: today)?|what have you (?:learned|learnt)(?: today)?|recent learnings|show learnings)$"
     )
     private val knowAboutMeRegex = Regex(
         "^(?:what do you know about me|what facts do you know(?: about me)?)$"
@@ -148,7 +148,18 @@ object FastIntents {
     fun match(text: String): ToolCall? {
         val norm = normalize(text)
         if (norm.isEmpty()) return null
+        matchNormalized(norm)?.let { return it }
 
+        // Retry on the last clause, so filler before a real request does not block it,
+        // e.g. "That's what I am asking. What did you learn today?"
+        val clauses = text.split(Regex("[.?!,]")).map { it.trim() }.filter { it.isNotEmpty() }
+        val lastClause = clauses.lastOrNull() ?: return null
+        val lastNorm = stripLeadingFillers(normalize(lastClause))
+        if (lastNorm.isEmpty() || lastNorm == norm) return null
+        return matchNormalized(lastNorm)
+    }
+
+    private fun matchNormalized(norm: String): ToolCall? {
         if (timeRegex.matches(norm)) return ToolCall("get_time", emptyMap())
         if (dateRegex.matches(norm)) return ToolCall("get_date", emptyMap())
 
@@ -286,6 +297,26 @@ object FastIntents {
         }
 
         return null
+    }
+
+    private val leadingFillers = listOf(
+        "that's what i am asking", "that's what i'm asking", "i was saying", "i said",
+        "i am asking", "i'm asking", "i was asking", "so", "and", "okay", "ok",
+    )
+
+    private fun stripLeadingFillers(norm: String): String {
+        var s = norm
+        var changed = true
+        while (changed) {
+            changed = false
+            for (f in leadingFillers) {
+                if (s.startsWith("$f ")) {
+                    s = s.removePrefix("$f ").trim()
+                    changed = true
+                }
+            }
+        }
+        return s
     }
 
     internal fun normalize(raw: String): String {

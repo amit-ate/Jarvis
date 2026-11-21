@@ -42,4 +42,16 @@ class PersonalQueryTest {
         assertFalse(PersonalQuery.isAboutDevice("tell me a joke"))
         assertFalse(PersonalQuery.isAboutDevice("what's my program"))
     }
+
+    @Test
+    fun `statements of personal facts are extracted, commands and questions are not`() {
+        org.junit.jupiter.api.Assertions.assertEquals("age" to "41", PersonalQuery.statedAttribute("My age is 41."))
+        org.junit.jupiter.api.Assertions.assertEquals("age" to "41", PersonalQuery.statedAttribute("I'm 41 years old"))
+        org.junit.jupiter.api.Assertions.assertEquals("name" to "Sam", PersonalQuery.statedAttribute("Call me Sam"))
+        org.junit.jupiter.api.Assertions.assertEquals("favourite colour" to "green", PersonalQuery.statedAttribute("my favorite color is green"))
+        org.junit.jupiter.api.Assertions.assertNull(PersonalQuery.statedAttribute("my battery is low"))
+        org.junit.jupiter.api.Assertions.assertNull(PersonalQuery.statedAttribute("what's my age"))
+        org.junit.jupiter.api.Assertions.assertNull(PersonalQuery.statedAttribute("set my alarm for 7"))
+        org.junit.jupiter.api.Assertions.assertEquals("favourite colour", PersonalQuery.askedAttribute("what is my favorite color?"))
+    }
 }

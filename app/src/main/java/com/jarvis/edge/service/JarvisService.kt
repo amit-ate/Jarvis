@@ -54,6 +54,7 @@ import com.jarvis.edge.hud.VocabItemUi
 import com.jarvis.edge.mind.BrainEvolver
 import com.jarvis.edge.mind.EmbeddingMigrator
 import com.jarvis.edge.mind.Episode
+import com.jarvis.edge.mind.PersonalFacts
 import com.jarvis.edge.mind.HotwordsWriter
 import com.jarvis.edge.mind.InitiativeEngine
 import com.jarvis.edge.mind.LearnedShortcut
@@ -519,8 +520,9 @@ class JarvisService : Service() {
                         parseShortcutToolCall(shortcut)
                     }
                 },
-                selfStateProvider = { SelfModel.toPromptLine(selfModel.capture()) },
+                selfStateProvider = { SelfModel.toSpokenSummary(selfModel.capture()) },
                 memoryProvider = { query -> buildMemoryContext(mind, embedFn(query)) },
+                personalFacts = PersonalFacts(mind, embedFn),
                 onEpisodeComplete = { userText, reply, toolCall, echoed ->
                     _activeExpert.value = expertRouter.activeExpertSummary(expertRouter.classify(userText))
                     val argsJson = toolCall?.let { JSONObject(it.args).toString() }

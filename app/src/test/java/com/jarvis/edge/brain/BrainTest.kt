@@ -416,10 +416,35 @@ class BrainTest {
             selfStateProvider = { "Self: bat=85%" },
         )
         brain.respond("tell me a joke") { }
-        brain.respond("how is my battery") { }
+        brain.respond("is my phone running hot") { } // "how is my battery" is a FastIntents tool call now
         assertEquals(2, fakeLlm.calls)
         assertFalse(fakeLlm.prompts[0].contains("[Phone status:"))
         assertTrue(fakeLlm.prompts[1].contains("[Phone status: bat=85%]"))
         assertFalse(fakeLlm.prompts[1].contains("Self:"))
+    }
+
+    private class MapFacts : PersonalFactStore {
+        val map = HashMap<String, String>()
+        override fun remember(attribute: String, value: String) { map[attribute] = value }
+        override fun recall(attribute: String): String? = map[attribute]
+    }
+
+    @Test
+    fun `stating then asking a personal fact is remembered and answered without the model`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, _ -> throw AssertionError("LLM must not be called") }
+        val tools = listOf(simpleTimeTool())
+        val facts = MapFacts()
+        val brain = Brain(
+            fast = FastIntents,
+            llm = fakeLlm,
+            prompts = PromptBuilder(tools),
+            tools = ToolRegistry(tools),
+            personalFacts = facts,
+        )
+        val spoken = mutableListOf<String>()
+        brain.respond("My age is 41.") { spoken.add(it) }
+        brain.respond("What's my age?") { spoken.add(it) }
+        assertEquals("41", facts.map["age"])
+        assertEquals(listOf("Got it, your age is 41. I'll remember that.", "Your age is 41."), spoken)
     }
 }

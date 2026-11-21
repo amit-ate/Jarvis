@@ -55,7 +55,7 @@ class PromptBuilderTest {
     }
 
     @Test
-    fun `history is limited to the last 3 turns`() {
+    fun `history window holds at most 3 turns and restarts in blocks of 3`() {
         val history = listOf(
             Turn("u1", "SAY: a1"),
             Turn("u2", "SAY: a2"),
@@ -63,8 +63,9 @@ class PromptBuilderTest {
             Turn("u4", "SAY: a4"),
         )
         val p = builder.prompt(history, "u5")
-        assertFalse("u1" in p)
-        assertTrue("u2" in p && "u3" in p && "u4" in p && "u5" in p)
+        // 4 turns -> a new window starting at u4 (keeps the prompt prefix stable for the next two turns).
+        assertFalse("u1" in p || "u2" in p || "u3" in p)
+        assertTrue("u4" in p && "u5" in p)
     }
 
     @Test
@@ -132,5 +133,17 @@ class PromptBuilderTest {
             assertFalse(inString, "Unclosed GBNF string literal on line: $line")
             assertFalse(inClass, "Unclosed GBNF character class on line: $line")
         }
+    }
+
+    @Test
+    fun `history window only restarts every third turn so prompts share a prefix`() {
+        val pb = PromptBuilder(emptyList())
+        val turns = (1..6).map { Turn("u$it", "SAY: a$it") }
+        fun prompt(n: Int) = pb.prompt(turns.take(n), "next", maxHistoryChars = 10_000)
+        // Turns 4, 5, 6 all start their history at u4, so each prompt extends the previous one's history.
+        org.junit.jupiter.api.Assertions.assertFalse(prompt(4).contains("u3"))
+        org.junit.jupiter.api.Assertions.assertTrue(prompt(5).contains("u4") && prompt(5).contains("u5"))
+        org.junit.jupiter.api.Assertions.assertTrue(prompt(6).contains("u4") && prompt(6).contains("u6"))
+        org.junit.jupiter.api.Assertions.assertFalse(pb.prompt(emptyList(), "x").contains("2+2"))
     }
 }

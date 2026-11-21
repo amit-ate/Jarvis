@@ -117,7 +117,10 @@ class PromptBuilder @JvmOverloads constructor(
     """.trimIndent()
 
     private fun selectHistory(history: List<Turn>, maxHistoryChars: Int): List<Turn> {
-        val recent = history.takeLast(MAX_HISTORY_TURNS)
+        // Window = the turns since the last multiple of MAX_HISTORY_TURNS (1, 2, 3, 1, 2, 3 ...): its start only moves
+        // every third turn, so consecutive prompts share their history prefix and the KV cache is reused.
+        val window = if (history.isEmpty()) 0 else ((history.size - 1) % MAX_HISTORY_TURNS) + 1
+        val recent = history.takeLast(window)
         if (maxHistoryChars == Int.MAX_VALUE) return recent
         if (maxHistoryChars <= 0 || recent.isEmpty()) return emptyList()
         val chosen = ArrayList<Turn>(recent.size)
@@ -135,8 +138,10 @@ class PromptBuilder @JvmOverloads constructor(
     private fun appendFewShots(sb: StringBuilder) {
         appendUserTurn(sb, "Hi")
         appendAssistantTurn(sb, "SAY: Hello, how can I help?")
-        appendUserTurn(sb, "2+2?")
-        appendAssistantTurn(sb, "SAY: 4.")
+        // An unclear transcript gets a request to repeat, not a made-up answer (the old "2+2?" example was copied
+        // into replies to garbled speech).
+        appendUserTurn(sb, "Ulin")
+        appendAssistantTurn(sb, "SAY: Sorry, I didn't catch that. Could you say it again?")
     }
 
     private fun appendUserTurn(sb: StringBuilder, text: String) {

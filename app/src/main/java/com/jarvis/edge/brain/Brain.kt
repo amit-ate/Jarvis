@@ -24,6 +24,7 @@ class Brain(
     private val shortcutMatcher: ((String) -> ToolCall?)? = null,
     private val selfStateProvider: () -> String? = { null },
     private val memoryProvider: (String) -> String? = { null },
+    private val personalFacts: PersonalFactStore? = null,
     private val onEpisodeComplete: (userText: String, reply: String, toolCall: ToolCall?, echoed: Boolean) -> Unit = { _, _, _, _ -> },
 ) {
     private val history = ArrayList<Turn>()
@@ -104,13 +105,26 @@ class Brain(
         val aboutDevice = PersonalQuery.isAboutDevice(userText)
         val selfState = if (aboutDevice) selfStateProvider() else null
         val memoryContext = memoryProvider(userText)
-        val askedAttr = if (aboutDevice) null else PersonalQuery.askedAttribute(userText)
-        if (askedAttr != null && memoryContext.isNullOrBlank()) {
-            val reply = "I don't know your $askedAttr yet. Tell me and I'll remember it."
+        val stated = if (aboutDevice || personalFacts == null) null else PersonalQuery.statedAttribute(userText)
+        if (stated != null) {
+            val (attr, value) = stated
+            val reply = runCatching { personalFacts!!.remember(attr, value) }
+                .fold({ "Got it, your $attr is $value. I'll remember that." }, { "Sorry, I couldn't save that." })
             onSentence(reply)
             recordTurn(userText, "SAY: $reply")
             onEpisodeComplete(userText, reply, null, false)
             return
+        }
+        val askedAttr = if (aboutDevice) null else PersonalQuery.askedAttribute(userText)
+        if (askedAttr != null) {
+            val known = personalFacts?.let { runCatching { it.recall(askedAttr) }.getOrNull() }
+            if (known != null || memoryContext.isNullOrBlank()) {
+                val reply = if (known != null) "Your $askedAttr is $known." else "I don't know your $askedAttr yet. Tell me and I'll remember it."
+                onSentence(reply)
+                recordTurn(userText, "SAY: $reply")
+                onEpisodeComplete(userText, reply, null, false)
+                return
+            }
         }
         val sampling = expertRouter?.selectAndActivate(userText, engine) ?: SamplingConfig()
         val promptText = prompts.prompt(
@@ -381,8 +395,10 @@ class Brain(
         val now = clockMillis()
         synchronized(historyLock) {
             history.add(Turn(user = user, assistant = assistant))
-            while (history.size > PromptBuilder.MAX_HISTORY_TURNS) {
-                history.removeAt(0)
+            // Drop a whole window at a time (see PromptBuilder.selectHistory) so the prompt prefix, and with it the
+            // KV cache, stays the same for most turns instead of shifting by one turn every time.
+            if (history.size > 2 * PromptBuilder.MAX_HISTORY_TURNS) {
+                repeat(PromptBuilder.MAX_HISTORY_TURNS) { history.removeAt(0) }
             }
             lastTurnMillis = now
         }
