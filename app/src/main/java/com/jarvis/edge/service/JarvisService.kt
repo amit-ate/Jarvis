@@ -502,7 +502,10 @@ class JarvisService : Service() {
                     }
                 }
             }
-            val activeLlm = if (missingLlm.isEmpty()) jniEngine else null
+            // Background loops use jniEngine + llmAvailable, never a smart-cast of the nullable activeLlm: the coroutine
+            // spill of that smart-cast compiled to a Void cast and crashed the service ~10 min after every start.
+            val llmAvailable = missingLlm.isEmpty()
+            val activeLlm: LlamaJniEngine? = if (llmAvailable) jniEngine else null
             val brain = Brain(
                 fast = FastIntents,
                 llm = activeLlm,
@@ -552,16 +555,16 @@ class JarvisService : Service() {
                 embed = embedFn,
                 hotwordsWriter = hotwordsWriter,
                 hotwordsOutFile = hotwordsFile,
-                llmExtract = if (activeLlm != null) {
+                llmExtract = if (llmAvailable) {
                     { batch ->
-                        if (activeLlm.isLoaded && _state.value == AssistantState.IDLE) {
+                        if (jniEngine.isLoaded && _state.value == AssistantState.IDLE) {
                             val extractPrompt = prompts.prompt(
                                 history = emptyList(),
                                 user = "Extract JSON {\"facts\":[],\"vocab\":[]} of durable personal facts and special names from:\n$batch",
                             )
                             val sb = StringBuilder()
                             runCatching {
-                                activeLlm.generate(extractPrompt, null, maxTokens = 96) { piece ->
+                                jniEngine.generate(extractPrompt, null, maxTokens = 96) { piece ->
                                     if (_state.value != AssistantState.IDLE) return@generate false
                                     sb.append(piece)
                                     true
@@ -678,7 +681,7 @@ class JarvisService : Service() {
             val brainEvolver = BrainEvolver()
 
             fun runEvolutionCycle(manual: Boolean): BrainEvolver.EvolutionResult? {
-                if (activeLlm == null || !activeLlm.isLoaded) return null
+                if (!llmAvailable || !jniEngine.isLoaded) return null
                 if (!evolutionRunning.compareAndSet(false, true)) return null
                 return try {
                     val snap = selfModel.capture()
@@ -686,7 +689,7 @@ class JarvisService : Service() {
                     if (!brainEvolver.canRunOvernight(snap, isIdle = isIdle, manualOverride = manual)) {
                         return null
                     }
-                    val (nEmbd, nLayer) = activeLlm.modelGeometry()
+                    val (nEmbd, nLayer) = jniEngine.modelGeometry()
                     val prevVersion = mind.listModelVersions().firstOrNull { it.active }
                     val prevVec = prevVersion?.adapterPath?.takeIf { it.isNotBlank() }?.let { rawPath ->
                         val f = File(rawPath).let { if (it.isAbsolute) it else File(adaptersDir, rawPath) }
@@ -702,7 +705,7 @@ class JarvisService : Service() {
                         previousIlStart = prevVec?.ilStart ?: 1,
                         previousIlEnd = prevVec?.ilEnd ?: 1,
                         trainVectorFn = { pos, neg, ilStart, ilEnd ->
-                            activeLlm.trainControlVector(pos, neg, ilStart, ilEnd)
+                            jniEngine.trainControlVector(pos, neg, ilStart, ilEnd)
                         },
                         applyVectorFn = { data, vecEmbd, ilStart, ilEnd ->
                             val vec = if (data != null && vecEmbd > 0 && data.size >= vecEmbd) {
@@ -720,9 +723,9 @@ class JarvisService : Service() {
                         },
                         evalGate = evalGate,
                         generateFn = { probe ->
-                            val sampling = expertRouter.selectAndActivate(probe.prompt, activeLlm)
+                            val sampling = expertRouter.selectAndActivate(probe.prompt, jniEngine)
                             val sb = StringBuilder()
-                            activeLlm.generate(
+                            jniEngine.generate(
                                 prompt = prompts.prompt(emptyList(), probe.prompt),
                                 grammar = prompts.grammar(),
                                 maxTokens = 72,
@@ -737,8 +740,8 @@ class JarvisService : Service() {
                         isInterrupted = { _state.value != AssistantState.IDLE },
                     )
                     applyModelVersionToRouter(mind.listModelVersions().firstOrNull { it.active })
-                    if (activeLlm.isLoaded && _state.value == AssistantState.IDLE) {
-                        runCatching { expertRouter.selectAndActivate("", activeLlm) }
+                    if (jniEngine.isLoaded && _state.value == AssistantState.IDLE) {
+                        runCatching { expertRouter.selectAndActivate("", jniEngine) }
                     }
                     onVersionChanged()
                     android.util.Log.i(
@@ -799,8 +802,8 @@ class JarvisService : Service() {
                         val ok = mind.activateModelVersion(id)
                         val active = mind.listModelVersions().firstOrNull { it.active }
                         applyModelVersionToRouter(active)
-                        if (activeLlm != null && activeLlm.isLoaded && _state.value == AssistantState.IDLE) {
-                            runCatching { expertRouter.selectAndActivate("", activeLlm) }
+                        if (llmAvailable && jniEngine.isLoaded && _state.value == AssistantState.IDLE) {
+                            runCatching { expertRouter.selectAndActivate("", jniEngine) }
                         }
                         onVersionChanged()
                         statusNotice = if (ok && active != null) {
@@ -854,7 +857,7 @@ class JarvisService : Service() {
 
                 override fun triggerEvolution() {
                     serviceScope.launch(Dispatchers.IO) {
-                        if (activeLlm == null || !activeLlm.isLoaded) {
+                        if (!llmAvailable || !jniEngine.isLoaded) {
                             statusNotice = "Cannot evolve: chat LLM is not loaded"
                             publishMindState(mind, selfModel)
                             return@launch
@@ -908,7 +911,7 @@ class JarvisService : Service() {
                         }
                         val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
                         val lastEvolveDay = mind.getMeta("last_evolution_day")
-                        if (activeLlm != null && activeLlm.isLoaded &&
+                        if (llmAvailable && jniEngine.isLoaded &&
                             lastEvolveDay != todayKey &&
                             brainEvolver.canRunOvernight(
                                 snapshot = snap,

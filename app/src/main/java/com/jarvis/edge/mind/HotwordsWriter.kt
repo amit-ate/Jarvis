@@ -43,12 +43,23 @@ class HotwordsWriter(private val tokens: Map<String, Int>) {
     }
 
     /**
-     * Tokenizes [phrases], deduplicates valid BPE lines, writes atomically to [outFile],
-     * and returns the number of unique lines written.
+     * Returns [phrase] as the plain uppercase words sherpa-onnx expects in a hotwords file
+     * (it splits them into BPE pieces itself, with modeling_unit=bpe), or null when the
+     * phrase cannot be expressed in this model's tokens.
+     */
+    fun hotwordLine(phrase: String): String? {
+        if (tokenizePhrase(phrase) == null) return null
+        val cleaned = phrase.trim().uppercase().replace('-', ' ').replace(NON_TOKEN_CHARS, "")
+        return cleaned.split(WHITESPACE).filter { it.isNotEmpty() }.joinToString(" ").ifEmpty { null }
+    }
+
+    /**
+     * Writes valid, deduplicated hotword lines (plain words, see [hotwordLine]) atomically to
+     * [outFile] and returns the number of unique lines written.
      */
     fun writeHotwords(phrases: List<String>, outFile: File): Int {
         val lines = phrases.asSequence()
-            .mapNotNull { tokenizePhrase(it) }
+            .mapNotNull { hotwordLine(it) }
             .distinct()
             .toList()
 

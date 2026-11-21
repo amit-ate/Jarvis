@@ -185,7 +185,8 @@ class MindStoreTest {
         val count = writer.writeHotwords(listOf("Jarvis", "jarvis", "Amy", "12345"), outFile)
         assertEquals(2, count)
         val lines = outFile.readLines().filter { it.isNotBlank() }
-        assertEquals(listOf("▁JAR VIS", "▁AM Y"), lines)
+        // Plain words: sherpa-onnx BPE-encodes hotwords itself (modeling_unit=bpe).
+        assertEquals(listOf("JARVIS", "AMY"), lines)
     }
 
     @Test

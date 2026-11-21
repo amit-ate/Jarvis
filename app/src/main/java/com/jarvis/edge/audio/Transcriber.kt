@@ -110,6 +110,11 @@ class SherpaLiveTranscriber(
             decoder = pickOnnx(modelDir, "decoder-epoch-99-avg-1").absolutePath,
             joiner = pickOnnx(modelDir, "joiner-epoch-99-avg-1").absolutePath,
         )
+        // A hotwords file is only safe with modeling_unit=bpe and a bpe.vocab: otherwise sherpa-onnx
+        // calls exit() (not catchable) while encoding them, killing the whole service.
+        val vocabFile = hotwordsFile?.let { File(it.parentFile ?: modelDir, "zipformer_bpe.vocab") }
+        val useHotwords = hotwordsFile?.isFile == true && hotwordsFile.length() > 0L && vocabFile != null &&
+            BpeVocab.writeFromTokens(File(modelDir, "tokens.txt"), vocabFile)
         val modelConfig = OnlineModelConfig(
             transducer = transducer,
             tokens = File(modelDir, "tokens.txt").absolutePath,
@@ -117,14 +122,16 @@ class SherpaLiveTranscriber(
             debug = false,
             provider = "cpu",
             modelType = "zipformer",
+            modelingUnit = if (useHotwords) "bpe" else "",
+            bpeVocab = if (useHotwords) vocabFile!!.absolutePath else "",
         )
         val endpointConfig = EndpointConfig(
             rule1 = EndpointRule(false, 2.4f, 0.0f),
             rule2 = EndpointRule(true, 1.4f, 0.0f),
             rule3 = EndpointRule(false, 0.0f, 20.0f),
         )
-        val resolvedHotwords = if (hotwordsFile?.isFile == true && hotwordsFile.length() > 0L) {
-            hotwordsFile.absolutePath
+        val resolvedHotwords = if (useHotwords) {
+            hotwordsFile!!.absolutePath
         } else {
             ""
         }
