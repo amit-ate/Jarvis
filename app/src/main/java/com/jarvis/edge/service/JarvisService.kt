@@ -37,6 +37,7 @@ import com.jarvis.edge.brain.LlmEngine
 import com.jarvis.edge.brain.PromptBuilder
 import com.jarvis.edge.brain.ToolCall
 import com.jarvis.edge.core.AssistantState
+import com.jarvis.edge.core.ChatLog
 import com.jarvis.edge.core.ModelPaths
 import com.jarvis.edge.core.TurnController
 import com.jarvis.edge.core.canMoveTo
@@ -101,6 +102,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -139,6 +141,11 @@ class JarvisService : Service() {
 
     private val manualWakeRequested = AtomicBoolean(false)
     private val initiativeSpeaking = AtomicBoolean(false)
+    /** Set after an answer: the mic reopens for a follow-up question without the wake word. */
+    private val followUpRequested = AtomicBoolean(false)
+    /** A typed (text mode) request is being answered: voice turns wait. */
+    private val textTurnActive = AtomicBoolean(false)
+    @Volatile private var textInputHandler: ((text: String, speak: Boolean) -> Unit)? = null
     private val evolutionRunning = AtomicBoolean(false)
 
     // Checkpoint hooks installed once the pipeline is built; used by onTrimMemory/onDestroy.
@@ -171,6 +178,19 @@ class JarvisService : Service() {
         when (intent?.action) {
             ACTION_STOP_SPEAKING -> speaker?.stop()
             ACTION_MANUAL_WAKE -> manualWakeRequested.set(true)
+            ACTION_TEXT_INPUT -> {
+                val text = intent.getStringExtra(EXTRA_TEXT)?.trim().orEmpty()
+                val speak = intent.getBooleanExtra(EXTRA_SPEAK, false)
+                if (text.isNotEmpty()) {
+                    val handler = textInputHandler
+                    if (handler != null) {
+                        handler(text, speak)
+                    } else {
+                        chatLog(this).addUser(text, typed = true)
+                        chatLog(this).addReplyChunk("I'm still starting up. Try again in a moment.")
+                    }
+                }
+            }
         }
         return START_STICKY
     }
@@ -219,7 +239,9 @@ class JarvisService : Service() {
     private fun startVoicePipeline() {
         if (voiceJob?.isActive == true) return
         voiceJob = serviceScope.launch {
-            val paths = ModelPaths(File(ModelPaths.DEFAULT_ROOT))
+            val modelRoot = File(ModelPaths.DEFAULT_ROOT)
+            val paths = ModelPaths(modelRoot, ModelPaths.resolveLlmFileName(modelRoot))
+            android.util.Log.i("JarvisBrain", "chat model: ${paths.llmFileName} (template ${PromptBuilder.templateFor(paths.llmFileName)})")
             val missingSpeech = paths.missingSpeech()
             if (missingSpeech.isNotEmpty()) {
                 updateState(
@@ -467,7 +489,7 @@ class JarvisService : Service() {
                 WebSearchTool(),
             )
             val registry = ToolRegistry(tools)
-            val prompts = PromptBuilder(tools, templateName = "chatml")
+            val prompts = PromptBuilder(tools, templateName = PromptBuilder.templateFor(paths.llmFileName))
             val kvManager = KvStateManager(kvDir)
             fun kvKey(): String = kvManager.key(
                 llmFile,
@@ -611,10 +633,12 @@ class JarvisService : Service() {
                 onTranscript = { t ->
                     android.util.Log.i("JarvisTurn", "HEARD: \"$t\"")
                     _transcript.value = t
+                    chatLog(this@JarvisService).addUser(t)
                 },
                 onReplyChunk = { r ->
                     android.util.Log.i("JarvisTurn", "SAID: \"$r\"")
                     _reply.value = r
+                    chatLog(this@JarvisService).addReplyChunk(r)
                 },
                 // No "Did you say ...?" round-trip: the streaming model disagrees with the accurate one on most correct
                 // transcripts, so it asked about good ones. Brain's confidence check handles unsure answers instead.
@@ -651,6 +675,41 @@ class JarvisService : Service() {
                     lastInteractionMs = System.currentTimeMillis()
                 },
             )
+
+            val textMutex = kotlinx.coroutines.sync.Mutex()
+            textInputHandler = { text, speak ->
+                serviceScope.launch {
+                    textMutex.withLock {
+                        // Let a voice turn in progress finish first; new voice turns wait while this one runs.
+                        while (_state.value != AssistantState.IDLE) delay(100)
+                        textTurnActive.set(true)
+                        try {
+                            android.util.Log.i("JarvisTurn", "TYPED: \"$text\"")
+                            chatLog(this@JarvisService).addUser(text, typed = true)
+                            _transcript.value = text
+                            lastInteractionMs = System.currentTimeMillis()
+                            updateState(AssistantState.THINKING)
+                            ttsSpeaker.clearStop()
+                            brain.respond(text) { sentence ->
+                                android.util.Log.i("JarvisTurn", "SAID: \"$sentence\"")
+                                _reply.value = sentence
+                                chatLog(this@JarvisService).addReplyChunk(sentence)
+                                if (speak) {
+                                    updateState(AssistantState.SPEAKING)
+                                    ttsSpeaker.speak(sentence)
+                                }
+                            }
+                        } catch (t: Throwable) {
+                            if (t is kotlinx.coroutines.CancellationException) throw t
+                            android.util.Log.e("JarvisTurn", "text turn failed", t)
+                            chatLog(this@JarvisService).addReplyChunk("Sorry, something went wrong.")
+                        } finally {
+                            textTurnActive.set(false)
+                            updateState(AssistantState.IDLE)
+                        }
+                    }
+                }
+            }
 
             val workingStateStore = WorkingStateStore(mind)
             saveWorkingStateFn = {
@@ -1011,7 +1070,7 @@ class JarvisService : Service() {
                         diagFrames = 0; diagVadFrames = 0; diagMaxRms = 0f
                     }
 
-                    if (_state.value == AssistantState.SPEAKING || initiativeSpeaking.get()) {
+                    if (_state.value == AssistantState.SPEAKING || initiativeSpeaking.get() || textTurnActive.get()) {
                         return@collect
                     }
 
@@ -1025,7 +1084,8 @@ class JarvisService : Service() {
 
                     preRoll.addLast(frame)
                     while (preRoll.size > PRE_ROLL_FRAMES) preRoll.removeFirst()
-                    val woken = manualWakeRequested.getAndSet(false) || gatedWake.accept(frame)
+                    val followUp = followUpRequested.getAndSet(false)
+                    val woken = followUp || manualWakeRequested.getAndSet(false) || gatedWake.accept(frame)
                     if (woken) {
                         lastInteractionMs = System.currentTimeMillis()
                         android.util.Log.i("JarvisWake", "WAKE detected")
@@ -1036,7 +1096,13 @@ class JarvisService : Service() {
                             runCatching { jniEngine.load(llmFile, contextTokens = 2048) }
                         }
 
-                        earcon.playWake()
+                        if (followUp) {
+                            // Conversation continues: no chime, and no pre-roll (it holds the tail of Jarvis's reply).
+                            android.util.Log.i("JarvisWake", "FOLLOW-UP listening")
+                            preRoll.clear()
+                        } else {
+                            earcon.playWake()
+                        }
                         updateState(AssistantState.LISTENING)
                         updateNotification("Jarvis: LISTENING")
                         val ch = Channel<FloatArray>(Channel.UNLIMITED)
@@ -1045,9 +1111,11 @@ class JarvisService : Service() {
                         turnChannel = ch
                         turnJob = launch {
                             try {
-                                turnController.runTurn(ch.receiveAsFlow())
+                                turnController.runTurn(ch.receiveAsFlow(), followUp = followUp)
                                 if (turnController.hasPendingConfirmation) {
                                     manualWakeRequested.set(true)
+                                } else if (turnController.invitesFollowUp && followUpEnabled(this@JarvisService)) {
+                                    followUpRequested.set(true)
                                 }
                             } finally {
                                 ch.close()
@@ -1147,7 +1215,9 @@ class JarvisService : Service() {
     }
 
     private fun buildMemoryContext(mind: SqliteMindStore, queryVec: FloatArray): String? {
-        val facts = mind.retrieveRelevantFacts(queryVec, topK = 2, minSim = 0.25f)
+        // Only clearly related facts: loosely related ones cost the small model ~60 prompt tokens of prefill per turn,
+        // break KV reuse of the history (the injected note is not in it) and get blended into unrelated answers.
+        val facts = mind.retrieveRelevantFacts(queryVec, topK = 2, minSim = 0.45f)
         // Only a near-identical earlier question: a loosely related old answer (often a guess) was being re-used as fact.
         val ep = mind.retrieveRelevantEpisode(queryVec, minSim = 0.80f)
         if (facts.isEmpty() && ep == null) return null
@@ -1231,6 +1301,36 @@ class JarvisService : Service() {
 
         const val ACTION_STOP_SPEAKING = "com.jarvis.edge.action.STOP_SPEAKING"
         const val ACTION_MANUAL_WAKE = "com.jarvis.edge.action.MANUAL_WAKE"
+        const val ACTION_TEXT_INPUT = "com.jarvis.edge.action.TEXT_INPUT"
+        const val EXTRA_TEXT = "text"
+        const val EXTRA_SPEAK = "speak"
+        private const val PREFS = "jarvis_prefs"
+        private const val PREF_FOLLOW_UP = "follow_up"
+
+        @Volatile private var chatLogInstance: ChatLog? = null
+
+        /** The conversation history shared by the service (which writes it) and the chat screen (which shows it). */
+        fun chatLog(context: Context): ChatLog = chatLogInstance ?: synchronized(this) {
+            chatLogInstance ?: ChatLog(File(context.applicationContext.filesDir, "chat_history.jsonl")).also { chatLogInstance = it }
+        }
+
+        fun followUpEnabled(context: Context): Boolean =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PREF_FOLLOW_UP, true)
+
+        fun setFollowUpEnabled(context: Context, enabled: Boolean) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PREF_FOLLOW_UP, enabled).apply()
+        }
+
+        /** Text mode: answers [text] like a spoken request; [speak] also reads the reply aloud. */
+        fun submitText(context: Context, text: String, speak: Boolean) {
+            context.startService(
+                Intent(context, JarvisService::class.java).apply {
+                    action = ACTION_TEXT_INPUT
+                    putExtra(EXTRA_TEXT, text)
+                    putExtra(EXTRA_SPEAK, speak)
+                },
+            )
+        }
 
         @Volatile
         var isRunning: Boolean = false

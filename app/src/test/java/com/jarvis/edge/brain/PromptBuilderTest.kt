@@ -72,7 +72,9 @@ class PromptBuilderTest {
     fun `gemma template starts with bos and formats turns`() {
         val gemma = PromptBuilder(realisticTools, templateName = "gemma")
         val p = gemma.prompt(emptyList(), "hello")
-        assertTrue(p.startsWith("<bos><start_of_turn>system\n"))
+        assertTrue(p.startsWith("<bos><start_of_turn>user\nYou are Jarvis"))
+        assertTrue("<start_of_turn>model\nUnderstood.<end_of_turn>\n" in p)
+        assertFalse("<start_of_turn>system" in p)
         assertTrue("<start_of_turn>user\nhello<end_of_turn>\n" in p)
         assertTrue(p.endsWith("<start_of_turn>model\n"))
     }
@@ -133,6 +135,13 @@ class PromptBuilderTest {
             assertFalse(inString, "Unclosed GBNF string literal on line: $line")
             assertFalse(inClass, "Unclosed GBNF character class on line: $line")
         }
+    }
+
+    @Test
+    fun `template follows the model file name`() {
+        assertEquals("gemma", PromptBuilder.templateFor("google_gemma-3-1b-it-Q4_0.gguf"))
+        assertEquals("llama3", PromptBuilder.templateFor("Llama-3.2-1B-Instruct-Q4_0.gguf"))
+        assertEquals("chatml", PromptBuilder.templateFor("qwen2.5-1.5b-instruct-q4_0.gguf"))
     }
 
     @Test

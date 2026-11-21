@@ -26,7 +26,7 @@ class SpeechSegmenterTest {
         }
         val res = seg.accept(frame())
         assertTrue(res is SpeechSegmenter.Result.Done)
-        assertEquals(30 * 512, (res as SpeechSegmenter.Result.Done).samples.size)
+        assertEquals((30 + 22) * 512, (res as SpeechSegmenter.Result.Done).samples.size) // the trailing silence is kept: a quiet last word lives there
     }
 
     @Test
@@ -66,7 +66,7 @@ class SpeechSegmenterTest {
         }
         val res = seg.accept(frame(), shortTail = true)
         assertTrue(res is SpeechSegmenter.Result.Done)
-        assertEquals(30 * 512, (res as SpeechSegmenter.Result.Done).samples.size)
+        assertEquals((30 + 15) * 512, (res as SpeechSegmenter.Result.Done).samples.size)
     }
 
     @Test
@@ -137,7 +137,7 @@ class SpeechSegmenterTest {
 
         assertTrue(done != null, "Expected Done after real utterance")
         // 16 pre-roll frames (indices 8..23) + 5 speech frames (indices 24..28) = 21 frames
-        assertEquals(21 * 512, done!!.samples.size)
+        assertEquals((21 + 22) * 512, done!!.samples.size)
         assertEquals(8f, done.samples[0])
         assertEquals(24f, done.samples[16 * 512])
     }

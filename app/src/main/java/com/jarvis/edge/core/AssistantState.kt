@@ -13,7 +13,8 @@ fun AssistantState.canMoveTo(next: AssistantState): Boolean {
         return true
     }
     return when (this) {
-        AssistantState.IDLE -> next == AssistantState.LISTENING
+        // THINKING straight from IDLE: a typed (text mode) request has no listening phase.
+        AssistantState.IDLE -> next == AssistantState.LISTENING || next == AssistantState.THINKING
         AssistantState.LISTENING -> next == AssistantState.THINKING
         AssistantState.THINKING -> next == AssistantState.SPEAKING
         AssistantState.SPEAKING -> next == AssistantState.LISTENING

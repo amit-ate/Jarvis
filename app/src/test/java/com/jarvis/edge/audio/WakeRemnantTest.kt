@@ -21,8 +21,16 @@ class WakeRemnantTest {
     fun dropsStrayFragmentBeforeRequest() {
         assertEquals("WHAT DO YOU KNOW ABOUT ME", WakeRemnant.clean("Y WHAT DO YOU KNOW ABOUT ME"))
         assertEquals("is it raining", WakeRemnant.clean("s is it raining"))
+        assertEquals("THANK YOU", WakeRemnant.clean("Y THANK YOU"))
         assertEquals("I want tea", WakeRemnant.clean("I want tea"))
         assertEquals("so what is that", WakeRemnant.clean("so what is that"))
+    }
+
+    @Test
+    fun fixesCommonMishears() {
+        assertEquals("tell me a joke.", WakeRemnant.clean("Tell me a joe."))
+        assertEquals("tell me a joke", WakeRemnant.clean("Jarvis, tell me a joe"))
+        assertEquals("tell me a joke about cats", WakeRemnant.clean("tell me a joke about cats"))
     }
 
     @Test

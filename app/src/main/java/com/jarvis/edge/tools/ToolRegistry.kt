@@ -8,6 +8,8 @@ class ToolRegistry(tools: List<Tool>) {
 
     fun all(): List<Tool> = ordered
 
+    fun has(name: String): Boolean = name in byName
+
     suspend fun run(call: ToolCall): ToolResult {
         val tool = byName[call.name]
             ?: return ToolResult(spoken = "I can't do that yet.", ok = false)

@@ -51,7 +51,18 @@ class TurnController(
     val hasPendingConfirmation: Boolean
         get() = pendingConfirmation != null
 
-    suspend fun runTurn(frames: Flow<FloatArray>) {
+    /**
+     * True when the last turn ended with a full answer that invites more conversation, so the mic can stay open for a
+     * follow-up without the wake word. False after silence, an interruption, a "sorry, didn't catch that" or a
+     * goodbye ("thanks", "that's all", "stop").
+     */
+    @Volatile
+    var invitesFollowUp: Boolean = false
+        private set
+
+    /** [followUp]: the mic reopened after an answer, so stray noise ends the conversation quietly. */
+    suspend fun runTurn(frames: Flow<FloatArray>, followUp: Boolean = false) {
+        invitesFollowUp = false
         setState(AssistantState.LISTENING)
         speaker.clearStop()
         segmenter.reset()
@@ -60,7 +71,12 @@ class TurnController(
         try {
             var capturedSamples: FloatArray? = null
             var noSpeech = false
-
+            var finalLive = ""
+            // The pre-roll carries the wake word, so "Jarvis" + a pause can close a segment holding nothing else; then
+            // keep listening for the actual request instead of answering "didn't catch that" over it.
+            var segments = 0
+            while (true) {
+            capturedSamples = null
             try {
                 frames.collect { frame ->
                     val liveText = live.accept(frame)
@@ -80,6 +96,17 @@ class TurnController(
             } catch (_: TurnDoneSignal) {
                 // Early exit from infinite mic stream once speech segmentation completes.
             }
+            if (noSpeech || capturedSamples == null) break
+            val rawLive = live.finish()
+            finalLive = WakeRemnant.clean(rawLive)
+            segments++
+            if (segments < MAX_SEGMENTS && (finalLive.isBlank() || looksLikeWakeTail(finalLive))) {
+                segmenter.reset()
+                live.reset()
+                continue
+            }
+            break
+            }
 
             if (noSpeech) {
                 pendingConfirmation = null
@@ -88,7 +115,6 @@ class TurnController(
             }
 
             val samples = capturedSamples ?: return
-            val finalLive = WakeRemnant.clean(live.finish())
             onSpeechActivity()
 
             setState(AssistantState.THINKING)
@@ -170,6 +196,7 @@ class TurnController(
             onTranscriptionDetail(liveRaw, accurateRaw, transcript)
 
             if (transcript.length < 2) {
+                if (followUp) return
                 setState(AssistantState.SPEAKING)
                 onReplyChunk(SORRY_MSG)
                 speaker.speak(SORRY_MSG)
@@ -177,6 +204,7 @@ class TurnController(
             }
 
             speakBrainResponse(transcript, heardConfidence)
+            invitesFollowUp = !ENDS_CONVERSATION.containsMatchIn(transcript.trim())
         } catch (_: StopSpeakingSignal) {
             onRespondInterrupted(spokenSoFar.toString())
             // Stop speaking mid-response cleanly and return to IDLE.
@@ -206,11 +234,24 @@ class TurnController(
         }
     }
 
+    /** A lone fragment such as "USH" or "VIS" left from the wake word, not a request. */
+    private fun looksLikeWakeTail(text: String): Boolean {
+        val words = text.lowercase().replace(Regex("[^a-z\\s]"), " ").trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        return words.size == 1 && words[0].length <= 4 && words[0] !in SHORT_REQUESTS
+    }
+
     private class TurnDoneSignal : CancellationException("Turn segmentation finished")
     private class StopSpeakingSignal : CancellationException("Speaker stopped")
 
     companion object {
         const val SORRY_MSG = "Sorry, I didn't catch that."
         const val REPEAT_MSG = "Okay, please repeat what you meant."
+        private const val MAX_SEGMENTS = 2
+        private val SHORT_REQUESTS = setOf("yes", "no", "hi", "hey", "ok", "okay", "stop", "why", "what", "how", "who", "bye", "help", "time", "nope", "yeah", "sure")
+        /** Things people say to close a conversation: no follow-up listening after these. */
+        val ENDS_CONVERSATION = Regex(
+            """^([a-z]{1,2}[ ,.]+)?(ok(ay)?[, ]+)?(thanks?( you)?|thank you( jarvis)?|that'?s (all|it)|bye|goodbye|good night|stop|cancel|never ?mind|no thanks?|nothing)\b[ .!,]*(jarvis)?[ .!]*$""",
+            RegexOption.IGNORE_CASE,
+        )
     }
 }

@@ -30,7 +30,9 @@ class PromptBuilder @JvmOverloads constructor(
 
         return when (templateName.lowercase()) {
             "llama3" -> "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n$body<|eot_id|>\n"
-            "gemma" -> "<bos><start_of_turn>system\n$body\n<end_of_turn>\n"
+            // Gemma has no system role: the instructions go in a first user turn the model acknowledges, which keeps
+            // the prefix fixed (and so cacheable) across turns.
+            "gemma" -> "<bos><start_of_turn>user\n$body<end_of_turn>\n<start_of_turn>model\nUnderstood.<end_of_turn>\n"
             else -> "<|im_start|>system\n$body\n<|im_end|>\n"
         }
     }
@@ -174,6 +176,16 @@ class PromptBuilder @JvmOverloads constructor(
 
     companion object {
         const val MAX_HISTORY_TURNS = 3
+
+        /** The chat template a GGUF file name implies: Gemma and Llama 3 have their own, everything else uses ChatML. */
+        fun templateFor(modelFileName: String): String {
+            val name = modelFileName.lowercase()
+            return when {
+                "gemma" in name -> "gemma"
+                "llama-3" in name || "llama3" in name -> "llama3"
+                else -> "chatml"
+            }
+        }
         private val SELF_PREFIX_REGEX = Regex("^self:\\s*", RegexOption.IGNORE_CASE)
         private const val SYSTEM_INSTRUCTION =
             "You are Jarvis, a concise voice assistant. Answer directly in 1-2 sentences as 'SAY: <answer>' OR call a tool JSON. NEVER repeat or parrot the user's question. If you do not know, say you are not sure. Use [Memory] facts when they answer the question."

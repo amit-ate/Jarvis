@@ -208,6 +208,23 @@ class HudActivity : ComponentActivity(), SensorEventListener {
                         )
                     }
 
+                    OutlinedButton(
+                        onClick = {
+                            startActivity(Intent(this@HudActivity, ChatActivity::class.java))
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        border = BorderStroke(1.dp, Color(0xFF334155)),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color(0xFF0F172A),
+                            contentColor = Color(0xFF38BDF8),
+                        ),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(top = 18.dp, start = 16.dp),
+                    ) {
+                        Text(text = "CHAT", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+
                     Text(
                         text = "Expert: $activeExpert • ${mindState.resources.healthLevel}",
                         color = Color(0xFF64748B),

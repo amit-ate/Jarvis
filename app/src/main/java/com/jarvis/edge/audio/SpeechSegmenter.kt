@@ -171,6 +171,12 @@ class SpeechSegmenter(
     }
 
     private fun finishDone(): Result.Done {
+        // Keep the trailing "silence": a quiet last word ("...of France?") falls below the speech gate and was cut off.
+        for (s in pendingSilence) {
+            speechBuffers.add(s)
+            totalSampleCount += s.size
+        }
+        pendingSilence.clear()
         val out = FloatArray(totalSampleCount)
         var pos = 0
         for (chunk in speechBuffers) {

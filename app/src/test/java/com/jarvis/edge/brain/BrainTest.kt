@@ -312,7 +312,7 @@ class BrainTest {
         assertEquals(listOf(true), episodes)
 
         // Next turn should NOT contain the echoed turn in conversation history.
-        brain.respond("thanks") { }
+        brain.respond("tell me more") { }
         assertFalse(fakeLlm.prompts[2].contains("who won two nobel prizes"))
     }
 
@@ -773,5 +773,118 @@ class BrainTest {
         val out = mutableListOf<String>()
         brain.respond("tell me a joke") { out.add(it) }
         assertTrue(out.none { it.contains("[") || it.contains("]") }, out.toString())
+    }
+
+    private fun fakeSearch(result: ToolResult, queries: MutableList<String> = mutableListOf()) = object : Tool {
+        override val name = "web_search"
+        override val description = "Search"
+        override val params: Map<String, List<String>?> = mapOf("query" to null)
+        override suspend fun run(args: Map<String, String>): ToolResult { queries.add(args["query"].orEmpty()); return result }
+    }
+
+    @Test
+    fun `unsure factual answer is looked up online and answered from the result`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { if (it.contains("Lata")) lp(0.004) else lp(0.9) }) { _, prompt, _, onToken ->
+            if ("Web search:" in prompt) {
+                onToken("SAY: Rabindranath Tagore wrote ")
+                onToken("the Indian national anthem.")
+            } else {
+                onToken("SAY: It was written by ")
+                onToken("Lata Mangeshkar.")
+            }
+        }
+        val queries = mutableListOf<String>()
+        val tools = listOf(simpleTimeTool(), fakeSearch(ToolResult("Jana Gana Mana...", ok = true, feedToModel = "Rabindranath Tagore, the author of Jana Gana Mana"), queries))
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("Who wrote the Indian national anthem?") { out.add(it) }
+        assertEquals(listOf(Brain.LOOKING_UP_MSG, "Rabindranath Tagore wrote the Indian national anthem."), out)
+        assertEquals(listOf("Who wrote the Indian national anthem?"), queries)
+        assertTrue("Rabindranath Tagore, the author" in fakeLlm.prompts.last())
+    }
+
+    @Test
+    fun `model hedging on a factual question triggers a lookup`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.9) }) { _, prompt, _, onToken ->
+            if ("Web search:" in prompt) onToken("SAY: Narendra Modi is the prime minister of India.")
+            else onToken("SAY: I don't have the current information on that.")
+        }
+        val tools = listOf(fakeSearch(ToolResult("PM", ok = true, feedToModel = "Narendra Modi was sworn in as Prime Minister")))
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("Which party does the Indian prime minister belong to?") { out.add(it) }
+        assertEquals(listOf(Brain.LOOKING_UP_MSG, "Narendra Modi is the prime minister of India."), out)
+    }
+
+    @Test
+    fun `failed lookup says it could not find the answer`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.004) }) { _, _, _, onToken ->
+            onToken("SAY: The president was ")
+            onToken("Rajendra Singh.")
+        }
+        val tools = listOf(fakeSearch(ToolResult("Sorry, I couldn't find an online answer.", ok = false)))
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("When did the Zubrovian war end?") { out.add(it) }
+        assertEquals(listOf(Brain.NOT_FOUND_MSG), out)
+    }
+
+    @Test
+    fun `searched question is answered from the results, not read out`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.9) }) { _, prompt, _, onToken ->
+            if ("Web search:" in prompt) onToken("SAY: Narendra Modi is the prime minister of India.") else onToken("SAY: Wrong path.")
+        }
+        val queries = mutableListOf<String>()
+        val tools = listOf(fakeSearch(ToolResult("India follows a parliamentary system...", ok = true, feedToModel = "Narendra Modi was sworn in as Prime Minister"), queries))
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("Who is the prime minister of India?") { out.add(it) }
+        assertEquals(listOf(Brain.LOOKING_UP_MSG, "Narendra Modi is the prime minister of India."), out)
+        assertEquals(listOf("Who is the prime minister of India?"), queries)
+    }
+
+    @Test
+    fun `follow-up question is searched together with the previous one`() {
+        val brain = Brain(fast = FastIntents, llm = null, prompts = PromptBuilder(emptyList()), tools = ToolRegistry(emptyList()))
+        val turns = listOf(Turn("What is the capital of France?", "SAY: Paris."))
+        assertEquals("What is the capital of France? And what about Germany?", brain.searchQuery("And what about Germany?", turns))
+        assertEquals("Who wrote Hamlet?", brain.searchQuery("Who wrote Hamlet?", turns))
+        assertEquals("And what about Germany?", brain.searchQuery("And what about Germany?", emptyList()))
+    }
+
+    @Test
+    fun `thanks and goodbyes get a short reply without the model`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Should not be used.") }
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(emptyList()), tools = ToolRegistry(emptyList()))
+        val out = mutableListOf<String>()
+        brain.respond("Thank you.") { out.add(it) }
+        brain.respond("OK bye") { out.add(it) }
+        brain.respond("never mind") { out.add(it) }
+        assertEquals(listOf("You're welcome.", "Goodbye!", "Okay."), out)
+        assertEquals(0, fakeLlm.calls)
+    }
+
+    @Test
+    fun `plain knowledge question is answered by the model before searching`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.95) }) { _, _, _, onToken -> onToken("SAY: The capital of France is Paris.") }
+        val queries = mutableListOf<String>()
+        val tools = listOf(fakeSearch(ToolResult("Paris...", ok = true), queries))
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("What is the capital of France?") { out.add(it) }
+        assertEquals(listOf("The capital of France is Paris."), out)
+        assertTrue(queries.isEmpty())
+    }
+
+    @Test
+    fun `same-shaped answer with new facts is not a repeat`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.95) }) { idx, _, _, onToken ->
+            onToken(if (idx == 0) "SAY: The capital of France is Paris." else "SAY: The capital of Germany is Berlin.")
+        }
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(emptyList()), tools = ToolRegistry(emptyList()))
+        val out = mutableListOf<String>()
+        brain.respond("What is the capital of France?") { out.add(it) }
+        brain.respond("And what about Germany?") { out.add(it) }
+        assertEquals(listOf("The capital of France is Paris.", "The capital of Germany is Berlin."), out)
     }
 }

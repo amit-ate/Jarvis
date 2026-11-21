@@ -3,6 +3,7 @@ package com.jarvis.edge.brain
 import com.jarvis.edge.core.SentenceSplitter
 import com.jarvis.edge.service.HealthGuard
 import com.jarvis.edge.tools.ToolRegistry
+import com.jarvis.edge.tools.ToolResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -110,10 +111,32 @@ class Brain(
         // Fast path / learned shortcut is checked first so basic commands work even without a loaded LLM or while HOT.
         val engineReady = llm?.isLoaded == true && healthGuard?.level() != HealthGuard.Level.HOT
         var offlineNudge: String? = null
-        val fastCall = fast.match(userText) ?: shortcutMatcher?.invoke(userText)
+        val fastCall = (fast.match(userText) ?: shortcutMatcher?.invoke(userText))?.takeUnless { call ->
+            // A plain knowledge question ("What is the capital of France?") is answered by the model first — about 5 s
+            // instead of ~15 s for search + reading the results — and looked up only if the answer is unsure.
+            // Explicit searches and questions whose answer changes over time still go to the web first.
+            call.name == "web_search" && llm?.isLoaded == true && healthGuard?.level() != HealthGuard.Level.HOT &&
+                EchoGuard.looksLikeFactualQuestion(userText) && !TIME_SENSITIVE.containsMatchIn(userText) &&
+                !EXPLICIT_SEARCH.containsMatchIn(userText.trim())
+        }
         if (fastCall != null) {
             log("fast intent: $fastCall")
-            val result = tools.run(fastCall)
+            // A spoken question is searched as asked ("Who wrote ...?" finds better snippets than the bare topic) and,
+            // with the model loaded, answered from the results instead of reading out the first snippet.
+            val groundSearch = fastCall.name == "web_search" && engineReady && tools.has("web_search")
+            val searchCall = if (groundSearch && EchoGuard.looksLikeFactualQuestion(userText)) {
+                ToolCall("web_search", mapOf("query" to searchQuery(userText, activeHistory())))
+            } else {
+                fastCall
+            }
+            val result = tools.run(searchCall)
+            if (groundSearch && result.ok && result.spoken.isNotBlank()) {
+                onSentence(LOOKING_UP_MSG) // covers the prefill of the search results
+                val answer = groundedAnswer(userText, result, activeHistory(), onSentence)
+                recordTurn(userText, "SAY: $answer")
+                onEpisodeComplete(userText, answer, searchCall, false)
+                return
+            }
             log("tool result: spoken=\"${result.spoken}\" feed=${result.feedToModel?.take(120)}")
             if (fastCall.name == "web_search" && !result.ok && engineReady) {
                 // Offline search: do not speak the failure; let the model answer from its own knowledge. No prompt note:
@@ -198,6 +221,13 @@ class Brain(
                 return
             }
         }
+        val closing = closingReply(userText)
+        if (closing != null) {
+            // Canned: the model's "You're welcome!" was rejected as a repeat of an earlier one.
+            onSentence(closing)
+            onEpisodeComplete(userText, closing, null, false)
+            return
+        }
         if (HOW_ARE_YOU.containsMatchIn(userText.trim())) {
             onSentence(HOW_ARE_YOU_REPLY)
             recordTurn(userText, "SAY: $HOW_ARE_YOU_REPLY")
@@ -216,11 +246,14 @@ class Brain(
         // rejected; for a factual question, a low-confidence first sentence (a guess) is replaced by an honest
         // "not sure", and a low-confidence later sentence ends the reply.
         val factual = EchoGuard.looksLikeFactualQuestion(userText) && !CHITCHAT.containsMatchIn(userText.trim())
+        // With a web lookup to fall back on, a guess is cheaper to replace, so a weaker token is enough to check.
+        val canLookUp = offlineNudge == null && heardConfidence >= HEARD_UNSURE && tools.has("web_search")
         val gate: (Int, String, Confidence) -> Gate = { i, s, c ->
             val repeat = repeatsHistory(s, turns, userText)
             when {
                 i == 0 && (repeat || EchoGuard.isEcho(userText, s)) -> Gate.REJECT
-                i == 0 && factual && (c.isUncertain() || PLACEHOLDER.containsMatchIn(s)) -> Gate.UNSURE
+                i == 0 && factual && (c.isUncertain() || PLACEHOLDER.containsMatchIn(s) || HEDGE.containsMatchIn(s.trim()) ||
+                    (canLookUp && c.tokens >= 2 && c.minProb < LOOKUP_MIN_PROB)) -> Gate.UNSURE
                 PLACEHOLDER.containsMatchIn(s) -> if (i == 0) Gate.UNSURE else Gate.TRUNCATE
                 // Very low confidence on the opening sentence means the model could not make sense of the input.
                 i == 0 && c.tokens >= 3 && c.score < VERY_UNSURE_SCORE -> Gate.UNSURE
@@ -228,6 +261,8 @@ class Brain(
                 else -> Gate.SPEAK
             }
         }
+        if (!memoryContext.isNullOrBlank()) log("memory: $memoryContext")
+        if (!selfState.isNullOrBlank()) log("phone status: $selfState")
         val promptText = prompts.prompt(
             history = turns,
             user = userText,
@@ -258,10 +293,7 @@ class Brain(
                 },
         )
         if (firstRun.abortedUnsure) {
-            val msg = if (factual) unsureReply(heardConfidence, offline = offlineNudge != null) else DIDNT_CATCH_MSG
-            onSentence(msg)
-            // Not recorded in history: the model copied "I'm not sure..." into later, unrelated answers.
-            onEpisodeComplete(userText, msg, null, false)
+            answerUnsure(userText, heardConfidence, factual, offline = offlineNudge != null, turns = turns, onSentence = onSentence)
             return
         }
         when (parsed) {
@@ -302,9 +334,7 @@ class Brain(
                         onSentence = onSentence,
                     )
                     if (retryRun.abortedUnsure) {
-                        val msg = if (factual) unsureReply(heardConfidence, offline = offlineNudge != null) else DIDNT_CATCH_MSG
-                        onSentence(msg)
-                        onEpisodeComplete(userText, msg, null, false)
+                        answerUnsure(userText, heardConfidence, factual, offline = offlineNudge != null, turns = turns, onSentence = onSentence)
                         return
                     }
                     val retryParsed = parseModelOutput(retryRun.raw)
@@ -571,9 +601,13 @@ class Brain(
         return turns.any { turn ->
             if (askedNow != null && normalizeForRepeat(turn.user) == askedNow) return@any false
             val prev = stripSayPrefix(turn.assistant)
-            normalizeForRepeat(prev) == norm || EchoGuard.isEcho(prev, reply)
+            // Same shape but new facts ("...Germany is Berlin" after "...France is Paris") is a new answer.
+            normalizeForRepeat(prev) == norm || (EchoGuard.isEcho(prev, reply) && (contentWords(reply) - contentWords(prev)).isEmpty())
         }
     }
+
+    private fun contentWords(text: String): Set<String> =
+        normalizeForRepeat(text).split(' ').filter { it.length > 2 && it !in REPEAT_STOP_WORDS }.toSet()
 
     private fun normalizeForRepeat(text: String): String =
         stripSayPrefix(text).lowercase()
@@ -591,10 +625,85 @@ class Brain(
             .replace(Regex("""[\[\]]"""), " ").replace(Regex("\\s+"), " ").replace(Regex("\\s+([.,!?'])"), "$1").trim().let { if (it.any(Char::isLetterOrDigit)) it else "" }
 
     /** A lone word that is not a greeting or a short reply is almost always a clipped or misheard request. */
+    private fun closingReply(text: String): String? {
+        val t = text.trim().trimEnd('.', '!', '?')
+        return when {
+            THANKS.matches(t) -> "You're welcome."
+            GOODBYE.matches(t) -> "Goodbye!"
+            DISMISS.matches(t) -> "Okay."
+            else -> null
+        }
+    }
+
     private fun looksGarbled(text: String): Boolean {
         val words = text.lowercase().replace(Regex("[^\\p{L}\\p{N}\\s']"), " ").trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (words.size >= 2 && words.all { it.length <= 2 }) return true // "S. L. M."
         return words.size == 1 && words[0] !in SINGLE_WORD_OK
+    }
+
+    /**
+     * The model could not answer confidently. A factual question that was heard clearly is looked up online and
+     * answered from the search result; otherwise Jarvis says it is not sure (or asks to repeat a non-question).
+     */
+    private suspend fun answerUnsure(
+        userText: String,
+        heardConfidence: Float,
+        factual: Boolean,
+        offline: Boolean,
+        turns: List<Turn>,
+        onSentence: suspend (String) -> Unit,
+    ) {
+        if (factual && !offline && heardConfidence >= HEARD_UNSURE && tools.has("web_search")) {
+            val call = ToolCall("web_search", mapOf("query" to searchQuery(userText, turns)))
+            val result = runCatching { tools.run(call) }.getOrNull()
+            if (result != null && result.ok && result.spoken.isNotBlank()) {
+                onSentence(LOOKING_UP_MSG)
+                val answer = groundedAnswer(userText, result, turns, onSentence)
+                recordTurn(userText, "SAY: $answer")
+                onEpisodeComplete(userText, answer, call, false)
+                return
+            }
+            log("web lookup failed: ${result?.spoken}")
+            onSentence(NOT_FOUND_MSG)
+            onEpisodeComplete(userText, NOT_FOUND_MSG, call, false)
+            return
+        }
+        val msg = if (factual) unsureReply(heardConfidence, offline) else DIDNT_CATCH_MSG
+        onSentence(msg)
+        // Not recorded in history: the model copied "I'm not sure..." into later, unrelated answers.
+        onEpisodeComplete(userText, msg, null, false)
+    }
+
+    /**
+     * What to search for: the question as asked, joined to the previous question when it only makes sense with it
+     * ("And what about Germany?" after "What is the capital of France?").
+     */
+    internal fun searchQuery(userText: String, turns: List<Turn>): String {
+        val previous = turns.lastOrNull()?.user?.trim().orEmpty()
+        return if (previous.isNotEmpty() && ELLIPTICAL_FOLLOW_UP.containsMatchIn(userText.trim())) "$previous $userText" else userText
+    }
+
+    /** Answers [userText] from a web search result: the model reads the snippets and replies in a sentence or two. */
+    private suspend fun groundedAnswer(
+        userText: String,
+        result: ToolResult,
+        turns: List<Turn>,
+        onSentence: suspend (String) -> Unit,
+    ): String {
+        val evidence = (result.feedToModel ?: result.spoken).replace(Regex("\\s+"), " ").take(MAX_EVIDENCE_CHARS)
+        log("web evidence: \"${evidence.take(200)}\"")
+        if (llm?.isLoaded != true) {
+            onSentence(result.spoken)
+            return result.spoken
+        }
+        return streamSayResponse(
+            prompt = prompts.prompt(history = turns, user = userText, memoryContext = "Web search: $evidence"),
+            grammar = prompts.sayOnlyGrammar(),
+            maxTokens = replyMaxTokens(),
+            sampling = SamplingConfig(temperature = 0.2f, repeatPenalty = 1.1f),
+            fallback = result.spoken,
+            onSentence = onSentence,
+        ).let(::stripPromptNotes).ifBlank { result.spoken }
     }
 
     private fun unsureReply(heardConfidence: Float, offline: Boolean): String = when {
@@ -646,12 +755,41 @@ class Brain(
         /** Below this, speech recognition probably got words wrong: ask the user to repeat rather than say "not sure". */
         private const val HEARD_UNSURE = 0.5f
         const val DIDNT_CATCH_MSG = "Sorry, I didn't catch that. Could you say it again?"
+        const val LOOKING_UP_MSG = "Let me look that up."
+        const val NOT_FOUND_MSG = "Sorry, I couldn't find that online."
+        /** Search text handed to the model: enough for an answer, short enough to prefill quickly on the phone. */
+        private const val MAX_EVIDENCE_CHARS = 240
+        /** Factual answers with a token below this are looked up when online (wrong names on the phone: 0.12-0.35). */
+        private const val LOOKUP_MIN_PROB = 0.45f
+        private val REPEAT_STOP_WORDS = setOf("the", "and", "for", "are", "was", "were", "has", "have", "its", "his", "her", "this", "that", "with", "from", "also", "you", "your")
+        /** Questions whose answer changes over time: the model's training data is stale, so these are searched first. */
+        private val TIME_SENSITIVE = Regex(
+            """\b(current(ly)?|now|today|latest|recent|this (year|week|month)|president|prime minister|chief minister|ceo|captain|governor|mayor|price|score|news|won|winner|election)\b""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val EXPLICIT_SEARCH = Regex(
+            """^(search|look up|google|find online|tell me about)\b""",
+            RegexOption.IGNORE_CASE,
+        )
+        /** A follow-up question that leans on the previous one. */
+        private val ELLIPTICAL_FOLLOW_UP = Regex(
+            """^(and|what about|how about|and what about|what of|and the|same for|also)\b""",
+            RegexOption.IGNORE_CASE,
+        )
+        /** The model saying it has no answer ("I don't have information about...") — treated like low confidence. */
+        private val HEDGE = Regex(
+            """^(i'?m not sure|i am not sure|i don'?t (have|know)|i do not (have|know)|i'?m (unable|not able)|i cannot|i can'?t (find|access|provide|tell))\b""",
+            RegexOption.IGNORE_CASE,
+        )
         private val PROMPT_NOTE = Regex("""\[(?:Rule|Memory|Phone status|Battery)[^\]]*]""", RegexOption.IGNORE_CASE)
         private val UNCLOSED_NOTE = Regex("""\[(?:Rule|Memory|Phone status|Battery)[^\]]*$""", RegexOption.IGNORE_CASE)
         /** Template slots like "[Name]" mean the model had no real answer. */
         private val PLACEHOLDER = Regex("""\[[A-Za-z ]{2,20}(]|$)""")
         private val HOW_ARE_YOU = Regex("""^(hi |hello |hey )?(jarvis,? )?(how are you|how's it going|how are you doing|how do you do)\b""", RegexOption.IGNORE_CASE)
         const val HOW_ARE_YOU_REPLY = "I'm doing well, thanks for asking. How can I help?"
+        private val THANKS = Regex("""(?i)(ok(ay)?[, ]+)?(thanks?( a lot| so much)?|thank you( so much| very much)?)([, ]+jarvis)?""")
+        private val GOODBYE = Regex("""(?i)(ok(ay)?[, ]+)?(bye|goodbye|good night|see you)([, ]+jarvis)?""")
+        private val DISMISS = Regex("""(?i)(ok(ay)?[, ]+)?(that'?s (all|it)|never ?mind|no thanks?|nothing|cancel|stop)([, ]+jarvis)?""")
         /** Questions about the conversation or Jarvis itself, not facts about the world. */
         private val CHITCHAT = Regex(
             """^(tell me (a|another) (joke|story)|tell me something|say something|sing|how are you|how's it going|how do you do|how have you been|what's up|whats up|what are you doing|who are you|what can you do|what do you think|do you like|are you)\b""",

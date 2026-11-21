@@ -16,7 +16,7 @@ class AssistantStateTest {
         assertTrue(IDLE.canMoveTo(LISTENING))
         assertTrue(IDLE.canMoveTo(ERROR))
         assertFalse(IDLE.canMoveTo(SPEAKING))
-        assertFalse(IDLE.canMoveTo(THINKING))
+        assertTrue(IDLE.canMoveTo(THINKING)) // typed request
     }
 
     @Test

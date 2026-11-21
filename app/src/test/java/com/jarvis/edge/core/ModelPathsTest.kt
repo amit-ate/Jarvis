@@ -39,4 +39,23 @@ class ModelPathsTest {
         }
         assertEquals(f, paths.require("vad/silero_vad.onnx"))
     }
+
+    @Test
+    fun `active model file picks a present model and falls back otherwise`(@TempDir tempDir: File) {
+        assertEquals(ModelPaths.DEFAULT_LLM_MODEL, ModelPaths.resolveLlmFileName(tempDir))
+        val llm = File(tempDir, "llm").apply { mkdirs() }
+        File(llm, "active_model.txt").writeText("gemma.gguf\n")
+        assertEquals(ModelPaths.DEFAULT_LLM_MODEL, ModelPaths.resolveLlmFileName(tempDir))
+        File(llm, "gemma.gguf").writeBytes(byteArrayOf(1))
+        assertEquals("gemma.gguf", ModelPaths.resolveLlmFileName(tempDir))
+        File(llm, "active_model.txt").writeText("../evil.gguf")
+        assertEquals(ModelPaths.DEFAULT_LLM_MODEL, ModelPaths.resolveLlmFileName(tempDir))
+    }
+
+    @Test
+    fun `preferred model is used when no active model is named`(@TempDir tempDir: File) {
+        val llm = File(tempDir, "llm").apply { mkdirs() }
+        File(llm, "google_gemma-3-1b-it-Q4_0.gguf").writeBytes(byteArrayOf(1))
+        assertEquals("google_gemma-3-1b-it-Q4_0.gguf", ModelPaths.resolveLlmFileName(tempDir))
+    }
 }

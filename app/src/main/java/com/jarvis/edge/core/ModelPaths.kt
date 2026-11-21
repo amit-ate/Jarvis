@@ -61,5 +61,23 @@ class ModelPaths(
     companion object {
         const val DEFAULT_ROOT = "/sdcard/Jarvis/models"
         const val DEFAULT_LLM_MODEL = "qwen2.5-0.5b-instruct-q4_0.gguf"
+        /** Optional one-line file naming the chat model to load from llm/ (lets a bigger model be swapped in without a rebuild). */
+        const val ACTIVE_MODEL_FILE = "llm/active_model.txt"
+
+        /**
+         * Chat models in order of preference, best first. Gemma 3 1B won the on-phone comparison (2026-11-21): 19/20
+         * on harder questions vs 16/20 for Qwen2.5-0.5B, first word in ~1.5-3 s once warm; Qwen2.5-1.5B answered as
+         * well but took 4-14 s to start, too slow for voice.
+         */
+        val PREFERRED_LLM_MODELS = listOf("google_gemma-3-1b-it-Q4_0.gguf", DEFAULT_LLM_MODEL)
+
+        /** The chat model named in [ACTIVE_MODEL_FILE] if present, else the first [PREFERRED_LLM_MODELS] on disk. */
+        fun resolveLlmFileName(root: File): String {
+            fun present(name: String) = File(root, "llm/$name").let { it.isFile && it.length() > 0L }
+            val named = runCatching { File(root, ACTIVE_MODEL_FILE).readText().trim() }.getOrNull()
+                ?.takeIf { it.isNotEmpty() && !it.contains('/') }
+            if (named != null && present(named)) return named
+            return PREFERRED_LLM_MODELS.firstOrNull(::present) ?: DEFAULT_LLM_MODEL
+        }
     }
 }
