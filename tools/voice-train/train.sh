@@ -22,7 +22,7 @@ echo "== pulling recordings"
 rm -rf "$WORK/samples" "$WORK/base"
 adb pull /sdcard/Jarvis/voice_samples "$WORK/samples" >/dev/null
 adb pull /sdcard/Jarvis/models/asr-parakeet "$WORK/base" >/dev/null
-"$PY" "$HERE/prepare.py" "$WORK/samples" "$WORK/data" "$@"
+"$PY" "$HERE/prepare.py" "$WORK/samples" "$WORK/data" --check-model "$WORK/base" "$@"
 
 echo "== stock recogniser on held-out sentences"
 "$PY" "$HERE/evaluate.py" "$WORK/base" "$WORK/data/test.json" --show | tee "$WORK/base.json"

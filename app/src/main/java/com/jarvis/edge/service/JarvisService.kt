@@ -638,6 +638,15 @@ class JarvisService : Service() {
 
             val mic = MicStream()
             val earcon = Earcon { suppressMs -> mic.suppressFor(suppressMs) }
+            // Reading a sentence aloud has natural pauses ("Jarvis, ... what time is it?"): a request's 0.75 s end-of-speech
+            // gap cut recordings off after "Jarvis,", so training recordings wait for 1.5 s of silence.
+            val enrollSegmenter = SpeechSegmenter(
+                vad = turnVadInstance,
+                trailingSilenceMs = 1500,
+                shortTrailingSilenceMs = 1500,
+                noSpeechTimeoutMs = 6000,
+                minSpeechFrames = 3,
+            )
             val turnController = TurnController(
                 segmenter = SpeechSegmenter(
                     vad = turnVadInstance,
@@ -1126,7 +1135,7 @@ class JarvisService : Service() {
                         turnChannel = ch
                         turnJob = launch {
                             try {
-                                val audio = turnController.captureUtterance(ch.receiveAsFlow())
+                                val audio = turnController.captureUtterance(ch.receiveAsFlow(), enrollSegmenter)
                                 val saved = audio?.let {
                                     voiceSamples().save(it, enrollText, VoiceSampleStore.SOURCE_ENROLL)
                                 }

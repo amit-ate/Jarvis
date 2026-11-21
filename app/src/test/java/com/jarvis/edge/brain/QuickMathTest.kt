@@ -71,6 +71,8 @@ class QuickMathTest {
             "What is the square root of one hundred and forty four?",
             "Convert ten miles to kilometres.",
             "How much is twenty five times four?",
+            "What's fifteen percent of two thousand?",
+            "How many grams are in a kilo?",
         )
         val wronglyAnswered = com.jarvis.edge.core.VoicePrompts.SENTENCES
             .filter { it !in math }

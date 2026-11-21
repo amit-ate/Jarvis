@@ -167,6 +167,30 @@ class TurnControllerTest {
         assertTrue(speaker.spoken.isEmpty())
     }
 
+    private class PatternVad(private val pattern: (Int) -> Boolean) : Vad {
+        private var i = 0
+        override fun isSpeech(frame: FloatArray): Boolean = pattern(i++)
+        override fun reset() { i = 0 }
+    }
+
+    @Test
+    fun `a recording keeps going through a pause when given a patient segmenter`() = runBlocking {
+        // "Jarvis," (10 frames), a ~1 s pause (30 frames of 32 ms), then "what time is it?" (20 frames).
+        val vad = { PatternVad { it < 10 || it in 40 until 60 } }
+        val tc = TurnController(
+            segmenter = SpeechSegmenter(vad(), trailingSilenceMs = 750),
+            live = FakeLive(""),
+            accurate = null,
+            brain = dummyBrain(),
+            speaker = FakeSpeaker(),
+            setState = {},
+        )
+        val cut = tc.captureUtterance(dummyFrames())!!
+        val whole = tc.captureUtterance(dummyFrames(), SpeechSegmenter(vad(), trailingSilenceMs = 1500))!!
+        assertTrue(cut.size < 40 * 512, "750 ms ends the recording in the pause")
+        assertTrue(whole.size >= 60 * 512, "1500 ms keeps the words after the pause")
+    }
+
     @Test
     fun `NoSpeech returns to idle silently`() = runBlocking {
         val speaker = FakeSpeaker()

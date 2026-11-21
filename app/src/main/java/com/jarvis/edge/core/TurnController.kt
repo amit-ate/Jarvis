@@ -247,7 +247,10 @@ class TurnController(
      * Records one utterance for the voice-training screen without transcribing or answering it: null when nothing
      * was said before the no-speech timeout.
      */
-    suspend fun captureUtterance(frames: Flow<FloatArray>): FloatArray? {
+    suspend fun captureUtterance(
+        frames: Flow<FloatArray>,
+        segmenter: SpeechSegmenter = this.segmenter,
+    ): FloatArray? {
         setState(AssistantState.LISTENING)
         segmenter.reset()
         var captured: FloatArray? = null
