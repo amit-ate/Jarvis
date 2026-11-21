@@ -265,6 +265,27 @@ class TurnControllerTest {
     }
 
     @Test
+    fun `restored pending confirmation accepts yes`() = runBlocking {
+        val speaker = FakeSpeaker()
+        val tc = TurnController(
+            segmenter = SpeechSegmenter(ScriptedVad(2), trailingSilenceMs = 64),
+            live = QueueLive(ArrayDeque(listOf("yes"))),
+            accurate = object : Transcriber {
+                override fun transcribe(samples: FloatArray) = "yes"
+            },
+            brain = dummyBrain("SAY: Timer set."),
+            speaker = speaker,
+            setState = {},
+        )
+        tc.restorePending("explain gravy", "explain gravity")
+        assertTrue(tc.hasPendingConfirmation)
+        assertEquals("explain gravy" to "explain gravity", tc.snapshotPending())
+        tc.runTurn(dummyFrames())
+        assertFalse(tc.hasPendingConfirmation)
+        assertEquals(listOf("Timer set."), speaker.spoken) // candidate ran through the brain
+    }
+
+    @Test
     fun `confirmation answered with no clears pending state and asks to repeat`() = runBlocking {
         val speaker = FakeSpeaker()
         val vad = ScriptedVad(2)

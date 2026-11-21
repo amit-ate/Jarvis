@@ -34,6 +34,13 @@ class TurnController(
     @Volatile
     private var pendingConfirmation: PendingConfirmation? = null
 
+    fun snapshotPending(): Pair<String, String>? =
+        pendingConfirmation?.let { it.heardRaw to it.candidate }
+
+    fun restorePending(heard: String, candidate: String) {
+        pendingConfirmation = PendingConfirmation(heardRaw = heard, candidate = candidate)
+    }
+
     val hasPendingConfirmation: Boolean
         get() = pendingConfirmation != null
 

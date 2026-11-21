@@ -57,6 +57,37 @@ class BrainTest {
         override suspend fun run(args: Map<String, String>) = ToolResult("It's 3:05 PM.", ok = true)
     }
 
+    private fun restoreBrain(now: Long, fakeLlm: FakeLlm): Brain {
+        val tools = listOf(simpleTimeTool())
+        return Brain(
+            fast = FastIntents,
+            llm = fakeLlm,
+            prompts = PromptBuilder(tools),
+            tools = ToolRegistry(tools),
+            clockMillis = { now },
+        )
+    }
+
+    @Test
+    fun `restored history is used in next prompt`() = runBlocking {
+        val now = 10_000_000L
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Ok.") }
+        val brain = restoreBrain(now, fakeLlm)
+        brain.restoreHistory(listOf(Turn("my dog is Rex", "SAY: Nice.")), now - 10_000L)
+        brain.respond("tell me a story") { }
+        assertTrue(fakeLlm.prompts.single().contains("my dog is Rex"))
+    }
+
+    @Test
+    fun `stale history is not restored`() = runBlocking {
+        val now = 10_000_000L
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Ok.") }
+        val brain = restoreBrain(now, fakeLlm)
+        brain.restoreHistory(listOf(Turn("my dog is Rex", "SAY: Nice.")), now - 3_600_000L)
+        brain.respond("tell me a story") { }
+        assertFalse(fakeLlm.prompts.single().contains("my dog is Rex"))
+    }
+
     @Test
     fun `fast intent never touches the model`() = runBlocking {
         val fakeLlm = FakeLlm { _, _, _, _ ->

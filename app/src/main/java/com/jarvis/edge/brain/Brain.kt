@@ -29,6 +29,15 @@ class Brain(
     private val history = ArrayList<Turn>()
     private var lastTurnMillis: Long = 0L
 
+    fun snapshotHistory(): Pair<List<Turn>, Long> = history.toList() to lastTurnMillis
+
+    fun restoreHistory(turns: List<Turn>, lastTurnMs: Long) {
+        if (clockMillis() - lastTurnMs > HISTORY_IDLE_RESET_MS) return
+        history.clear()
+        history.addAll(turns.takeLast(PromptBuilder.MAX_HISTORY_TURNS))
+        lastTurnMillis = lastTurnMs
+    }
+
     private data class StreamResult(
         val raw: String,
         val spokeAnything: Boolean,

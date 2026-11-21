@@ -36,6 +36,12 @@ class InitiativeEngine(
     private var lastGreetingMs: Long = Long.MIN_VALUE / 2
     private var lastRecapMs: Long = Long.MIN_VALUE / 2
 
+    fun mutedUntilMs(): Long = muteUntilMs
+
+    fun restoreMute(untilMs: Long) {
+        if (untilMs > muteUntilMs) muteUntilMs = untilMs
+    }
+
     fun muteFor(durationMs: Long, nowMs: Long = clockMs()) {
         val until = nowMs + durationMs.coerceAtLeast(0L)
         if (until > muteUntilMs) {
