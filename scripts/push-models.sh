@@ -21,9 +21,13 @@ if [ -z "${LLM_MODEL:-}" ] || [ ! -f "$SRC_DIR/llm/$LLM_MODEL" ]; then
   exit 1
 fi
 
-$ADB shell "mkdir -p $DEST_DIR/kws $DEST_DIR/vad $DEST_DIR/asr-moonshine $DEST_DIR/asr-zipformer $DEST_DIR/asr-parakeet $DEST_DIR/tts $DEST_DIR/vlm $DEST_DIR/embed $DEST_DIR/adapters $DEST_DIR/llm"
+$ADB shell "mkdir -p $DEST_DIR/kws $DEST_DIR/vad $DEST_DIR/asr-moonshine $DEST_DIR/asr-zipformer $DEST_DIR/asr-parakeet $DEST_DIR/asr-live $DEST_DIR/tts $DEST_DIR/vlm $DEST_DIR/embed $DEST_DIR/adapters $DEST_DIR/llm"
 
-for sub in kws vad asr-moonshine asr-zipformer asr-parakeet tts vlm embed; do
+for sub in kws vad asr-moonshine asr-zipformer asr-parakeet asr-live tts vlm embed; do
+  if [ "$sub" = asr-live ] && { [ ! -d "$SRC_DIR/$sub" ] || [ -z "$(ls -A "$SRC_DIR/$sub" 2>/dev/null)" ]; }; then
+    echo "Skipping optional $sub (falls back to asr-zipformer)"
+    continue
+  fi
   if [ ! -d "$SRC_DIR/$sub" ] || [ -z "$(ls -A "$SRC_DIR/$sub" 2>/dev/null)" ]; then
     echo "ERROR: Missing or empty $SRC_DIR/$sub" >&2
     exit 1

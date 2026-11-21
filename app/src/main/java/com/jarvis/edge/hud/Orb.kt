@@ -40,6 +40,8 @@ fun JarvisOrb(
     state: AssistantState,
     micLevel: Float,
     modifier: Modifier = Modifier,
+    /** A web lookup is running: amber orb with a radar sweep and orbiting dots. */
+    searching: Boolean = false,
 ) {
     val transition = rememberInfiniteTransition(label = "jarvis_orb")
     val pulse by transition.animateFloat(
@@ -66,7 +68,7 @@ fun JarvisOrb(
         val baseRadius = size.minDimension * 0.32f
         val clampedMic = micLevel.coerceIn(0f, 1f)
 
-        val (coreColor, radiusFactor) = when (state) {
+        val (coreColor, radiusFactor) = if (searching) Color(0xFFF59E0B) to (0.92f + (pulse - 0.88f) * 0.5f) else when (state) {
             AssistantState.IDLE -> Color(0xFF0EA5E9) to (0.90f + (pulse - 0.88f) * 0.35f)
             AssistantState.LISTENING -> Color(0xFF22D3EE) to (0.95f + clampedMic * 0.45f)
             AssistantState.THINKING -> Color(0xFF818CF8) to 0.96f
@@ -90,7 +92,31 @@ fun JarvisOrb(
             center = center,
         )
 
-        if (state == AssistantState.THINKING) {
+        if (searching) {
+            val ringRadius = radius * 1.3f
+            // Radar sweep: a fading trail of arcs behind the leading edge.
+            for (k in 0 until 6) {
+                drawArc(
+                    color = Color(0xFFFDE68A).copy(alpha = 0.75f * (1f - k / 6f)),
+                    startAngle = spin * 1.5f - k * 14f,
+                    sweepAngle = 14f,
+                    useCenter = false,
+                    topLeft = Offset(center.x - ringRadius, center.y - ringRadius),
+                    size = Size(ringRadius * 2f, ringRadius * 2f),
+                    style = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round),
+                )
+            }
+            // Three dots orbiting the other way, like results coming in.
+            val orbit = radius * 1.6f
+            for (k in 0 until 3) {
+                val a = Math.toRadians((-spin + k * 120f).toDouble())
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.9f),
+                    radius = 4.dp.toPx() * (0.8f + 0.4f * (pulse - 0.88f) / 0.2f),
+                    center = Offset(center.x + (orbit * kotlin.math.cos(a)).toFloat(), center.y + (orbit * kotlin.math.sin(a)).toFloat()),
+                )
+            }
+        } else if (state == AssistantState.THINKING) {
             val ringRadius = radius * 1.25f
             drawArc(
                 color = Color.White.copy(alpha = 0.85f),

@@ -11,9 +11,10 @@ VAD_DIR="$MODELS_DIR/vad"
 MOONSHINE_DIR="$MODELS_DIR/asr-moonshine"
 ZIPFORMER_DIR="$MODELS_DIR/asr-zipformer"
 PARAKEET_DIR="$MODELS_DIR/asr-parakeet"
+LIVE_DIR="$MODELS_DIR/asr-live"
 TTS_DIR="$MODELS_DIR/tts"
 VLM_DIR="$MODELS_DIR/vlm"
-mkdir -p "$LLM_DIR" "$EMBED_DIR" "$ADAPTERS_DIR" "$KWS_DIR" "$VAD_DIR" "$MOONSHINE_DIR" "$ZIPFORMER_DIR" "$PARAKEET_DIR" "$TTS_DIR" "$VLM_DIR"
+mkdir -p "$LLM_DIR" "$EMBED_DIR" "$ADAPTERS_DIR" "$KWS_DIR" "$VAD_DIR" "$MOONSHINE_DIR" "$ZIPFORMER_DIR" "$PARAKEET_DIR" "$LIVE_DIR" "$TTS_DIR" "$VLM_DIR"
 
 download_hf() {
   local repo="$1"
@@ -108,6 +109,10 @@ download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-mo
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2" "$ZIPFORMER_DIR"
 # Accurate recogniser (preferred over Moonshine when present): Parakeet TDT 110M, 1.7% vs 7.5% word errors, ~0.16x real time on the phone
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8.tar.bz2" "$PARAKEET_DIR"
+# Streaming ("live") recogniser, preferred over asr-zipformer when present: kroko zipformer, ~15% vs ~63% word errors on real
+# recordings, RTF ~0.7-0.85 with 2 threads on the phone. Used as shipped (fp32 onnx; its encoder already holds int8 weights,
+# and re-quantizing it with onnxruntime quantize_dynamic was ~1.6x slower on the phone for no accuracy gain).
+download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2" "$LIVE_DIR"
 download_tar_bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_GB-alan-medium.tar.bz2" "$TTS_DIR"
 
 # Vision-Language Model (Task 3 / Task 11: SmolVLM-256M for <= 25s CPU inference on SDM636)

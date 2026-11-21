@@ -180,8 +180,15 @@ class Earcon(
 ) {
     private val sampleRate = 16_000
     private val chimePcm: ShortArray by lazy { buildWakeChime() }
+    private val searchPcm: ShortArray by lazy { buildSearchCue() }
 
-    fun playWake() {
+    fun playWake() = play(chimePcm)
+
+    /** A soft rising cue for "searching the web" (replaces saying "Let me look that up"). */
+    fun playSearching() = play(searchPcm)
+
+    private fun play(pcm: ShortArray) {
+        val chimePcm = pcm
         val durationMs = (chimePcm.size * 1000L) / sampleRate
         suppressMicMs(durationMs + 30L)
         val minBuf = AudioTrack.getMinBufferSize(
@@ -214,6 +221,25 @@ class Earcon(
             runCatching { track.stop() }
             track.release()
         }
+    }
+
+    /** Three gentle rising sine notes (G5, B5, D6) with soft attack and decay, ~0.45 s. */
+    private fun buildSearchCue(): ShortArray {
+        val notes = doubleArrayOf(784.0, 988.0, 1175.0)
+        val noteSamples = (sampleRate * 0.13).toInt()
+        val gap = (sampleRate * 0.025).toInt()
+        val out = ShortArray(notes.size * (noteSamples + gap))
+        var pos = 0
+        for (f in notes) {
+            for (i in 0 until noteSamples) {
+                val t = i.toDouble() / noteSamples
+                val env = 0.16 * minOf(1.0, t * 12.0) * (1.0 - t) * (1.0 - t)
+                val s = sin(2.0 * PI * f * i / sampleRate) + 0.3 * sin(4.0 * PI * f * i / sampleRate)
+                out[pos++] = (s / 1.3 * env * Short.MAX_VALUE).toInt().toShort()
+            }
+            pos += gap
+        }
+        return out
     }
 
     private fun buildWakeChime(): ShortArray {

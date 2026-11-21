@@ -89,6 +89,7 @@ class HudActivity : ComponentActivity(), SensorEventListener {
             val transcript by JarvisService.transcript.collectAsState()
             val reply by JarvisService.reply.collectAsState()
             val micLevel by JarvisService.micLevel.collectAsState()
+            val searching by JarvisService.searching.collectAsState()
             val activeExpert by JarvisService.activeExpert.collectAsState()
             val mindState by MindUiBridge.state.collectAsState()
             val fillWhite by JarvisService.screenFillWhite.collectAsState()
@@ -158,12 +159,12 @@ class HudActivity : ComponentActivity(), SensorEventListener {
                             Spacer(Modifier.height(16.dp))
                         }
 
-                        JarvisOrb(state = state, micLevel = micLevel)
+                        JarvisOrb(state = state, micLevel = micLevel, searching = searching)
                         Spacer(Modifier.height(20.dp))
 
                         Text(
-                            text = state.name,
-                            color = Color(0xFF38BDF8),
+                            text = if (searching) "SEARCHING" else state.name,
+                            color = if (searching) Color(0xFFF59E0B) else Color(0xFF38BDF8),
                             fontSize = 20.sp,
                             fontWeight = FontWeight.SemiBold,
                         )

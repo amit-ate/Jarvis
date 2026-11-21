@@ -140,6 +140,8 @@ class JarvisService : Service() {
     @Volatile private var personalSpeech: com.jarvis.edge.core.PersonalSpeechModel? = null
     /** "Run auto learning": starts a reflection pass now and reports what was learned (set once the pipeline is up). */
     @Volatile private var learnNowFn: (() -> Boolean)? = null
+    /** Plays the "searching the web" cue (set once the earcon exists). */
+    @Volatile private var searchCue: (() -> Unit)? = null
     private var llmEngine: LlmEngine? = null
     private var embeddingEngine: EmbeddingEngine? = null
     private var mindStore: SqliteMindStore? = null
@@ -353,11 +355,13 @@ class JarvisService : Service() {
             }
             val gatedWake = GatedWakeWord(vad = loggingVad, inner = kwsInstance)
 
+            val liveAsr = ModelPaths.resolveLiveAsr(paths.root)
+            android.util.Log.i("JarvisVoice", "live ASR: " + liveAsr.dir.name)
             val live = SherpaLiveTranscriber(
-                modelDir = File(paths.root, "asr-zipformer"),
+                modelDir = liveAsr.dir,
                 numThreads = 2,
                 onInitThread = { LlamaJniEngine.pinCurrentThreadToBigCores() },
-                hotwordsFile = hotwordsFile,
+                hotwordsFile = hotwordsFile.takeIf { liveAsr.supportsHotwords },
                 hotwordsScore = 2.0f,
             ).also { liveTranscriber = it }
 
@@ -594,6 +598,11 @@ class JarvisService : Service() {
                 selfStateProvider = { SelfModel.toSpokenSummary(selfModel.capture()) },
                 memoryProvider = { query -> buildMemoryContext(mind, embedFn(query)) },
                 personalFacts = PersonalFacts(mind, embedFn),
+                prefetchLookups = true,
+                onLookupStarted = {
+                    _searching.value = true
+                    searchCue?.invoke()
+                },
                 onEntityCorrected = { heard, meant ->
                     learnInBackground { it.learnCorrection(heard, meant) }
                     runCatching {
@@ -666,6 +675,7 @@ class JarvisService : Service() {
 
             val mic = MicStream()
             val earcon = Earcon { suppressMs -> mic.suppressFor(suppressMs) }
+            searchCue = { serviceScope.launch(Dispatchers.IO) { runCatching { earcon.playSearching() } } }
             // Reading a sentence aloud has natural pauses ("Jarvis, ... what time is it?"): a request's 0.75 s end-of-speech
             // gap cut recordings off after "Jarvis,", so training recordings wait for 1.5 s of silence.
             val enrollSegmenter = SpeechSegmenter(
@@ -790,6 +800,7 @@ class JarvisService : Service() {
                             ttsSpeaker.clearStop()
                             brain.respond(text) { sentence ->
                                 android.util.Log.i("JarvisTurn", "SAID: \"$sentence\"")
+                                _searching.value = false
                                 _reply.value = sentence
                                 chatLog(this@JarvisService).addReplyChunk(sentence)
                                 if (speak) {
@@ -1566,6 +1577,10 @@ class JarvisService : Service() {
         private val _reply = MutableStateFlow("")
         val reply: StateFlow<String> = _reply.asStateFlow()
 
+        private val _searching = MutableStateFlow(false)
+        /** A web lookup is running: the HUD orb and the chat screen animate (cleared when Jarvis speaks or goes idle). */
+        val searching: StateFlow<Boolean> = _searching.asStateFlow()
+
         private val _micLevel = MutableStateFlow(0f)
         val micLevel: StateFlow<Float> = _micLevel.asStateFlow()
 
@@ -1581,6 +1596,9 @@ class JarvisService : Service() {
         fun updateState(next: AssistantState, msg: String? = null) {
             if (_state.value.canMoveTo(next)) {
                 _state.value = next
+            }
+            if (next == AssistantState.SPEAKING || next == AssistantState.IDLE || next == AssistantState.ERROR) {
+                _searching.value = false
             }
             if (msg != null) {
                 _message.value = msg

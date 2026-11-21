@@ -57,6 +57,7 @@ class ChatActivity : ComponentActivity() {
         setContent {
             val messages by log.messages.collectAsState()
             val state by JarvisService.state.collectAsState()
+            val searching by JarvisService.searching.collectAsState()
             var input by remember { mutableStateOf("") }
             var speakReplies by remember { mutableStateOf(prefs.getBoolean("speak", false)) }
             var followUp by remember { mutableStateOf(JarvisService.followUpEnabled(this@ChatActivity)) }
@@ -76,7 +77,11 @@ class ChatActivity : ComponentActivity() {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Chat", color = Color(0xFF38BDF8), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.weight(1f))
-                    Text(statusLabel(state), color = Color(0xFF64748B), fontSize = 12.sp)
+                    Text(
+                        if (searching) "searching the web…" else statusLabel(state),
+                        color = if (searching) Color(0xFFF59E0B) else Color(0xFF64748B),
+                        fontSize = 12.sp,
+                    )
                     TextButton(onClick = {
                         startActivity(android.content.Intent(this@ChatActivity, VoiceTrainingActivity::class.java))
                     }) { Text("Train voice", color = Color(0xFF38BDF8)) }

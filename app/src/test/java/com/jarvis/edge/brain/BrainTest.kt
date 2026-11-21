@@ -794,7 +794,7 @@ class BrainTest {
             }
         }
         val queries = mutableListOf<String>()
-        val tools = listOf(simpleTimeTool(), fakeSearch(ToolResult("Jana Gana Mana...", ok = true, feedToModel = "Rabindranath Tagore, the author of Jana Gana Mana"), queries))
+        val tools = listOf(simpleTimeTool(), fakeSearch(ToolResult("Jana Gana Mana...", ok = true, feedToModel = "Rabindranath Tagore, the author of Jana Gana Mana, India's national anthem"), queries))
         val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
         val out = mutableListOf<String>()
         brain.respond("Who wrote the Indian national anthem?") { out.add(it) }
@@ -897,5 +897,124 @@ class BrainTest {
         brain.respond("What is the capital of France?") { out.add(it) }
         brain.respond("And what about Germany?") { out.add(it) }
         assertEquals(listOf("The capital of France is Paris.", "The capital of Germany is Berlin."), out)
+    }
+
+    @Test
+    fun `an unsure first sentence stops generating at the weak token`() = runBlocking {
+        var consumed = 0
+        val fakeLlm = FakeLlm(logProbFor = { if (it.contains("Lata")) lp(0.004) else lp(0.9) }) { _, prompt, _, onToken ->
+            if ("Web search:" in prompt) {
+                onToken("SAY: Rabindranath Tagore wrote it.")
+            } else {
+                for (p in listOf("SAY: It was written ", "by ", "Lata ", "Mangeshkar ", "in ", "the ", "year ", "1911.")) {
+                    consumed++
+                    if (!onToken(p)) break
+                }
+            }
+        }
+        val tools = listOf(fakeSearch(ToolResult("x", ok = true, feedToModel = "Rabindranath Tagore wrote Jana Gana Mana")))
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("Who wrote the Indian national anthem?") { out.add(it) }
+        assertEquals(listOf(Brain.LOOKING_UP_MSG, "Rabindranath Tagore wrote it."), out)
+        assertEquals(3, consumed, "stopped right after the weak token")
+    }
+
+    @Test
+    fun `a prefetched lookup is used instead of searching again`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { if (it.contains("Lata")) lp(0.004) else lp(0.9) }) { _, prompt, _, onToken ->
+            if ("Web search:" in prompt) {
+                onToken("SAY: Rabindranath Tagore wrote it.")
+            } else {
+                onToken("SAY: It was written by ")
+                onToken("Lata Mangeshkar.")
+            }
+        }
+        val queries = mutableListOf<String>()
+        val tools = listOf(fakeSearch(ToolResult("x", ok = true, feedToModel = "Tagore wrote the national anthem"), queries))
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools), prefetchLookups = true)
+        val out = mutableListOf<String>()
+        brain.respond("Who wrote the Indian national anthem?") { out.add(it) }
+        assertEquals(listOf(Brain.LOOKING_UP_MSG, "Rabindranath Tagore wrote it."), out)
+        assertEquals(1, queries.size)
+    }
+
+    @Test
+    fun `claims of actions nothing performed are not spoken`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.9) }) { _, _, _, onToken -> onToken("SAY: I'm running. I'll let you know when I've finished.") }
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(emptyList()), tools = ToolRegistry(emptyList()))
+        val out = mutableListOf<String>()
+        brain.respond("go ahead then") { out.add(it) }
+        assertTrue(out.none { it.contains("running") || it.contains("let you know") }, out.toString())
+    }
+
+    @Test
+    fun `the next prompt starts with what the model already read`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.9) }) { idx, _, _, onToken -> onToken(if (idx == 0) "SAY: Hello there." else "SAY: Sure.") }
+        val brain = Brain(
+            fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(emptyList(), templateName = "gemma"),
+            tools = ToolRegistry(emptyList()), selfStateProvider = { "battery 50%" }, memoryProvider = { "User's age is 41" },
+        )
+        brain.respond("tell me something nice") {}
+        brain.respond("and another thing") {}
+        val (first, second) = fakeLlm.prompts
+        assertTrue(second.startsWith(first + "SAY: Hello there."), "second prompt:\n$second\nfirst:\n$first")
+    }
+
+    @Test
+    fun `a follow-up that says it or that is searched with the previous question`() {
+        val brain = Brain(fast = FastIntents, llm = null, prompts = PromptBuilder(emptyList()), tools = ToolRegistry(emptyList()))
+        val turns = listOf(Turn("Who wrote the Indian national anthem?", "SAY: Rabindranath Tagore."))
+        assertEquals("Who wrote the Indian national anthem? Tell me one more fact about it", brain.searchQuery("Tell me one more fact about it", turns))
+        assertEquals("How tall is Mount Everest?", brain.searchQuery("How tall is Mount Everest?", turns))
+    }
+
+    @Test
+    fun `after a lookup the next prompt still starts with what the model read`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { if (it.contains("Lata")) lp(0.004) else lp(0.9) }) { _, prompt, _, onToken ->
+            when {
+                "Web search:" in prompt -> onToken("SAY: Rabindranath Tagore wrote it.")
+                "one more" in prompt.substringAfterLast("<start_of_turn>user") -> onToken("SAY: It was adopted in 1950.")
+                else -> { onToken("SAY: It was written by "); onToken("Lata Mangeshkar.") }
+            }
+        }
+        val tools = listOf(fakeSearch(ToolResult("x", ok = true, feedToModel = "Tagore wrote Jana Gana Mana")))
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools, templateName = "gemma"), tools = ToolRegistry(tools))
+        brain.respond("Who wrote the Indian national anthem?") {}
+        brain.respond("Tell me one more fact about the song") {}
+        val grounded = fakeLlm.prompts.first { "Web search:" in it }
+        assertTrue(fakeLlm.prompts.last().startsWith(grounded + "SAY: Rabindranath Tagore wrote it."), fakeLlm.prompts.last())
+    }
+
+    @Test
+    fun `chained follow-ups search with the question that names the topic`() {
+        val brain = Brain(fast = FastIntents, llm = null, prompts = PromptBuilder(emptyList()), tools = ToolRegistry(emptyList()))
+        val turns = listOf(
+            Turn("Who wrote the Indian national anthem?", "SAY: Rabindranath Tagore."),
+            Turn("Tell me one more fact about it", "SAY: It was adopted in 1950."),
+        )
+        assertEquals("Who wrote the Indian national anthem? When was it first sung", brain.searchQuery("When was it first sung", turns))
+    }
+
+    @Test
+    fun `off-topic search results are not used as an answer`() {
+        val brain = Brain(fast = FastIntents, llm = null, prompts = PromptBuilder(emptyList()), tools = ToolRegistry(emptyList()))
+        val q = "Who wrote the Indian national anthem? When was it first sung"
+        assertFalse(brain.evidenceIsRelevant(q, "When I started working with Max Martin in Sweden, he played the demo for Baby One More Time"))
+        assertTrue(brain.evidenceIsRelevant(q, "Jana Gana Mana, the national anthem of India, was first sung in Calcutta in 1911"))
+    }
+
+    @Test
+    fun `with a lookup callback the app animates instead of saying let me look that up`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { if (it.contains("Lata")) lp(0.004) else lp(0.9) }) { _, prompt, _, onToken ->
+            if ("Web search:" in prompt) onToken("SAY: Rabindranath Tagore wrote it.") else { onToken("SAY: It was written by "); onToken("Lata Mangeshkar.") }
+        }
+        var lookups = 0
+        val tools = listOf(fakeSearch(ToolResult("x", ok = true, feedToModel = "Tagore wrote the national anthem")))
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools), onLookupStarted = { lookups++ })
+        val out = mutableListOf<String>()
+        brain.respond("Who wrote the Indian national anthem?") { out.add(it) }
+        assertEquals(listOf("Rabindranath Tagore wrote it."), out)
+        assertEquals(1, lookups)
     }
 }

@@ -60,6 +60,19 @@ class ModelPathsTest {
     }
 
     @Test
+    fun `live recogniser uses asr-live when complete, else the old zipformer`(@TempDir tempDir: File) {
+        fun put(rel: String) = File(tempDir, rel).apply { parentFile?.mkdirs(); writeBytes(byteArrayOf(1)) }
+        assertEquals(File(tempDir, "asr-zipformer"), ModelPaths.resolveLiveAsr(tempDir).dir)
+        assertTrue(ModelPaths.resolveLiveAsr(tempDir).supportsHotwords)
+        listOf("encoder.onnx", "decoder.onnx", "tokens.txt").forEach { put("asr-live/$it") }
+        assertEquals(File(tempDir, "asr-zipformer"), ModelPaths.resolveLiveAsr(tempDir).dir)
+        put("asr-live/joiner.onnx")
+        val live = ModelPaths.resolveLiveAsr(tempDir)
+        assertEquals(File(tempDir, "asr-live"), live.dir)
+        assertEquals(false, live.supportsHotwords)
+    }
+
+    @Test
     fun `accurate recogniser prefers custom, then parakeet, then moonshine`(@TempDir tempDir: File) {
         assertEquals(null, ModelPaths.resolveAccurateAsr(tempDir))
         fun put(rel: String) = File(tempDir, rel).apply { parentFile?.mkdirs(); writeBytes(byteArrayOf(1)) }

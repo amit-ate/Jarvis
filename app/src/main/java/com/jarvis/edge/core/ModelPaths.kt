@@ -10,6 +10,9 @@ data class AccurateAsr(val kind: Kind, val dir: File) {
     enum class Kind { TRANSDUCER, MOONSHINE }
 }
 
+/** The streaming ("live") recogniser to load. [supportsHotwords] is true only for the original zipformer (bpe vocab). */
+data class LiveAsr(val dir: File, val supportsHotwords: Boolean)
+
 class ModelPaths(
     val root: File,
     val llmFileName: String = DEFAULT_LLM_MODEL,
@@ -94,6 +97,17 @@ class ModelPaths(
             }
             val moonshine = File(root, "asr-moonshine")
             return if ("asr-moonshine" !in skip && File(moonshine, "encode.int8.onnx").isFile) AccurateAsr(AccurateAsr.Kind.MOONSHINE, moonshine) else null
+        }
+
+        /**
+         * Streaming recogniser for end-of-speech detection and short commands: models/asr-live (kroko, 15% vs 63% word
+         * errors on real recordings) when complete, else the original models/asr-zipformer.
+         */
+        fun resolveLiveAsr(root: File): LiveAsr {
+            val live = File(root, "asr-live")
+            fun has(base: String) = File(live, "$base.onnx").isFile || File(live, "$base.int8.onnx").isFile
+            val ok = has("encoder") && has("decoder") && has("joiner") && File(live, "tokens.txt").isFile
+            return if (ok) LiveAsr(live, supportsHotwords = false) else LiveAsr(File(root, "asr-zipformer"), supportsHotwords = true)
         }
 
         /** The chat model named in [ACTIVE_MODEL_FILE] if present, else the first [PREFERRED_LLM_MODELS] on disk. */

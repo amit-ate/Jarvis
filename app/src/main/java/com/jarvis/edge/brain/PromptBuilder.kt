@@ -5,6 +5,11 @@ import com.jarvis.edge.tools.Tool
 data class Turn(
     val user: String,
     val assistant: String,
+    /**
+     * The user message exactly as it was sent to the model (with its [Phone status]/[Memory] notes). History repeats
+     * it verbatim so the next prompt starts with the tokens already in the KV cache and only the new turn is read.
+     */
+    val sent: String? = null,
 )
 
 class PromptBuilder @JvmOverloads constructor(
@@ -61,10 +66,20 @@ class PromptBuilder @JvmOverloads constructor(
         }
         val selectedHistory = selectHistory(history, maxHistoryChars)
         for (turn in selectedHistory) {
-            appendUserTurn(this, turn.user)
+            appendUserTurn(this, turn.sent ?: turn.user)
             appendAssistantTurn(this, turn.assistant)
         }
-        val userPayload = buildString {
+        appendUserTurn(this, userPayload(user, selfStateLine, memoryContext, extraNudge))
+        appendAssistantPrefix(this)
+    }
+
+    /** The current user message with its notes, as [prompt] sends it (record it in [Turn.sent]). */
+    fun userPayload(
+        user: String,
+        selfStateLine: String? = null,
+        memoryContext: String? = null,
+        extraNudge: String? = null,
+    ): String = buildString {
             val phoneLine = selfStateLine?.trim()?.replace(SELF_PREFIX_REGEX, "")?.trim()
             if (!phoneLine.isNullOrBlank()) {
                 append("[Phone status: ").append(phoneLine).append("]\n")
@@ -76,9 +91,6 @@ class PromptBuilder @JvmOverloads constructor(
                 append("[Rule: ").append(extraNudge.trim()).append("]\n")
             }
             append(user)
-        }
-        appendUserTurn(this, userPayload)
-        appendAssistantPrefix(this)
     }
 
     fun grammar(): String = buildString {

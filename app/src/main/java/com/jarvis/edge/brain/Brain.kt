@@ -6,6 +6,10 @@ import com.jarvis.edge.tools.ToolRegistry
 import com.jarvis.edge.tools.ToolResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -29,7 +33,13 @@ class Brain(
     private val onEpisodeComplete: (userText: String, reply: String, toolCall: ToolCall?, echoed: Boolean) -> Unit = { _, _, _, _ -> },
     /** The user corrected a misheard name ("It is Rahul Gandhi"): learn it so the recogniser gets it right next time. */
     private val onEntityCorrected: (heard: String, meant: String) -> Unit = { _, _ -> },
+    /** Start the web search alongside the model's first answer for factual questions (on in the app, off in tests). */
+    private val prefetchLookups: Boolean = false,
+    /** A web lookup started: the app shows a searching animation and plays a cue instead of saying LOOKING_UP_MSG. */
+    private val onLookupStarted: (() -> Unit)? = null,
 ) {
+    private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val toolNames: Set<String> by lazy { tools.all().map { it.name }.toSet() }
     /** Last thing the user said (whether or not it went into history), so a follow-up correction can refer to it. */
     @Volatile
     private var lastUserUtterance: String? = null
@@ -138,11 +148,12 @@ class Brain(
             } else {
                 fastCall
             }
+            if (groundSearch) onLookupStarted?.invoke()
             val result = tools.run(searchCall)
             if (groundSearch && result.ok && result.spoken.isNotBlank()) {
-                onSentence(LOOKING_UP_MSG) // covers the prefill of the search results
+                if (onLookupStarted == null) onSentence(LOOKING_UP_MSG) // covers the prefill of the search results
                 val answer = groundedAnswer(userText, result, activeHistory(), onSentence)
-                recordTurn(userText, "SAY: $answer")
+                recordTurn(userText, "SAY: $answer", sent = lastGroundedSent)
                 onEpisodeComplete(userText, answer, searchCall, false)
                 return
             }
@@ -262,6 +273,8 @@ class Brain(
             val repeat = repeatsHistory(s, turns, userText)
             when {
                 i == 0 && (repeat || EchoGuard.isEcho(userText, s)) -> Gate.REJECT
+                // "I can update my knowledge using the get_weather tool", "I'm running": claims nothing backs up.
+                ClaimGuard.problem(s, toolNames, toolRan = false) != null -> if (i == 0) Gate.REJECT else Gate.TRUNCATE
                 i == 0 && factual && (c.isUncertain() || PLACEHOLDER.containsMatchIn(s) || HEDGE.containsMatchIn(s.trim()) ||
                     (canLookUp && c.tokens >= 2 && c.minProb < LOOKUP_MIN_PROB)) -> Gate.UNSURE
                 PLACEHOLDER.containsMatchIn(s) -> if (i == 0) Gate.UNSURE else Gate.TRUNCATE
@@ -280,7 +293,14 @@ class Brain(
             memoryContext = memoryContext,
             extraNudge = offlineNudge?.ifBlank { null },
         )
+        val sentPayload = prompts.userPayload(userText, selfState, memoryContext, offlineNudge?.ifBlank { null })
         val t0 = clockMillis()
+        // A factual question that may need a lookup: search while the model answers, so an unsure answer doesn't wait.
+        val prefetch = if (prefetchLookups && factual && canLookUp) {
+            lookupScope.async { runCatching { tools.run(ToolCall("web_search", mapOf("query" to searchQuery(userText, turns)))) }.getOrNull() }
+        } else {
+            null
+        }
         val firstRun = streamSayOrCollectTool(
             engine = engine,
             prompt = promptText,
@@ -289,7 +309,9 @@ class Brain(
             sampling = sampling,
             gate = gate,
             onSentence = onSentence,
+            earlyUnsureLogProb = if (factual && canLookUp) kotlin.math.ln(LOOKUP_MIN_PROB) else null,
         )
+        if (!firstRun.abortedUnsure) prefetch?.cancel()
 
         val parsed = parseModelOutput(firstRun.raw)
         log("llm raw (${clockMillis() - t0} ms, maxTokens=$maxTokens): \"${firstRun.raw.take(300)}\" -> $parsed")
@@ -303,7 +325,7 @@ class Brain(
                 },
         )
         if (firstRun.abortedUnsure) {
-            answerUnsure(userText, heardConfidence, factual, offline = offlineNudge != null, turns = turns, onSentence = onSentence)
+            answerUnsure(userText, heardConfidence, factual, offline = offlineNudge != null, turns = turns, onSentence = onSentence, prefetched = prefetch)
             return
         }
         when (parsed) {
@@ -312,14 +334,14 @@ class Brain(
                 if (firstRun.spokeAnything) {
                     // Already said out loud: a retry would only talk over it. Keep what was spoken.
                     val echoed = EchoGuard.isEcho(userText, replyText) || repeatsHistory(replyText, turns, userText)
-                    if (!echoed) recordTurn(userText, "SAY: $replyText")
+                    if (!echoed) recordTurn(userText, "SAY: $replyText", sent = sentPayload)
                     onEpisodeComplete(userText, replyText, null, echoed)
                     return
                 }
                 val repeats = repeatsHistory(replyText, turns, userText)
                 val echoed = firstRun.abortedForEcho || replyText.isBlank() || EchoGuard.isEcho(userText, replyText) || repeats
                 if (!echoed) {
-                    recordTurn(userText, "SAY: $replyText")
+                    recordTurn(userText, "SAY: $replyText", sent = sentPayload)
                     onEpisodeComplete(userText, replyText, null, false)
                     return
                 }
@@ -344,7 +366,7 @@ class Brain(
                         onSentence = onSentence,
                     )
                     if (retryRun.abortedUnsure) {
-                        answerUnsure(userText, heardConfidence, factual, offline = offlineNudge != null, turns = turns, onSentence = onSentence)
+                        answerUnsure(userText, heardConfidence, factual, offline = offlineNudge != null, turns = turns, onSentence = onSentence, prefetched = prefetch)
                         return
                     }
                     val retryParsed = parseModelOutput(retryRun.raw)
@@ -448,8 +470,14 @@ class Brain(
         sampling: SamplingConfig,
         gate: ((index: Int, sentence: String, confidence: Confidence) -> Gate)?,
         onSentence: suspend (String) -> Unit,
+        /** Stop as soon as the first sentence has a token below this log-prob (it would be withheld anyway). */
+        earlyUnsureLogProb: Float? = null,
     ): StreamResult = coroutineScope {
         val raw = StringBuilder()
+        val stoppedUnsure = AtomicBoolean(false)
+        var firstSentenceTokens = 0
+        var firstSentenceMin = Float.POSITIVE_INFINITY
+        var sentencesEmitted = 0
         val splitter = SentenceSplitter(splitClauses = true)
         val sentences = Channel<Pair<String, Confidence>>(Channel.UNLIMITED)
         // Producer-thread only: token log-probs since the last emitted sentence.
@@ -463,6 +491,7 @@ class Brain(
                 currentCounted = true
             }
             sentences.trySend(s to meter.takeAndReset())
+            sentencesEmitted++
         }
         fun settleCurrent() {
             if (!currentCounted) meter.add(currentLp)
@@ -520,10 +549,18 @@ class Brain(
                             emit(s)
                         }
                     }
+                    if (earlyUnsureLogProb != null && mode == StreamMode.SAY && sentencesEmitted == 0 && !currentLp.isNaN()) {
+                        firstSentenceTokens++
+                        firstSentenceMin = minOf(firstSentenceMin, currentLp)
+                        if (firstSentenceTokens >= 2 && firstSentenceMin < earlyUnsureLogProb) {
+                            stoppedUnsure.set(true)
+                            return@generate false
+                        }
+                    }
                     !cancelledByConsumer.get()
                 }
 
-                if (!cancelledByConsumer.get() && mode == StreamMode.UNKNOWN) {
+                if (!cancelledByConsumer.get() && !stoppedUnsure.get() && mode == StreamMode.UNKNOWN) {
                     val trimmed = raw.toString().trimStart()
                     if (!trimmed.startsWith("{")) {
                         val text = if (trimmed.startsWith("SAY:", ignoreCase = true)) {
@@ -539,7 +576,7 @@ class Brain(
                         mode = StreamMode.SAY
                     }
                 }
-                if (!cancelledByConsumer.get() && mode == StreamMode.SAY) {
+                if (!cancelledByConsumer.get() && !stoppedUnsure.get() && mode == StreamMode.SAY) {
                     settleCurrent()
                     splitter.flush()?.let { rem -> emit(rem) }
                 }
@@ -589,6 +626,10 @@ class Brain(
             throw t
         }
         producer.join()
+        if (stoppedUnsure.get() && !spokeAnything) {
+            abortedUnsure = true
+            log("first sentence unsure mid-way (min log-prob %.2f); stopped early".format(java.util.Locale.US, firstSentenceMin))
+        }
         StreamResult(
             raw = raw.toString(),
             spokeAnything = spokeAnything,
@@ -662,14 +703,16 @@ class Brain(
         offline: Boolean,
         turns: List<Turn>,
         onSentence: suspend (String) -> Unit,
+        prefetched: Deferred<ToolResult?>? = null,
     ) {
         if (factual && !offline && heardConfidence >= HEARD_UNSURE && tools.has("web_search")) {
             val call = ToolCall("web_search", mapOf("query" to searchQuery(userText, turns)))
-            val result = runCatching { tools.run(call) }.getOrNull()
+            onLookupStarted?.invoke()
+            val result = prefetched?.let { runCatching { it.await() }.getOrNull() } ?: runCatching { tools.run(call) }.getOrNull()
             if (result != null && result.ok && result.spoken.isNotBlank()) {
-                onSentence(LOOKING_UP_MSG)
+                if (onLookupStarted == null) onSentence(LOOKING_UP_MSG)
                 val answer = groundedAnswer(userText, result, turns, onSentence)
-                recordTurn(userText, "SAY: $answer")
+                recordTurn(userText, "SAY: $answer", sent = lastGroundedSent)
                 onEpisodeComplete(userText, answer, call, false)
                 return
             }
@@ -689,8 +732,13 @@ class Brain(
      * ("And what about Germany?" after "What is the capital of France?").
      */
     internal fun searchQuery(userText: String, turns: List<Turn>): String {
-        val previous = turns.lastOrNull()?.user?.trim().orEmpty()
-        return if (previous.isNotEmpty() && ELLIPTICAL_FOLLOW_UP.containsMatchIn(userText.trim())) "$previous $userText" else userText
+        fun leans(q: String) = ELLIPTICAL_FOLLOW_UP.containsMatchIn(q.trim()) || REFERS_BACK.containsMatchIn(q)
+        if (!leans(userText)) return userText
+        // The topic is the last question that names it: "When was it first sung" after "Tell me more about it" after
+        // "Who wrote the Indian national anthem?" searches with the anthem question.
+        val topic = turns.asReversed().map { it.user.trim() }.firstOrNull { it.isNotEmpty() && !leans(it) }
+            ?: turns.lastOrNull()?.user?.trim().orEmpty()
+        return if (topic.isNotEmpty()) "$topic $userText" else userText
     }
 
     /** Answers [userText] from a web search result: the model reads the snippets and replies in a sentence or two. */
@@ -702,10 +750,17 @@ class Brain(
     ): String {
         val evidence = (result.feedToModel ?: result.spoken).replace(Regex("\\s+"), " ").take(MAX_EVIDENCE_CHARS)
         log("web evidence: \"${evidence.take(200)}\"")
+        if (!evidenceIsRelevant(searchQuery(userText, turns), evidence)) {
+            // A pop-song article for an anthem question was turned into "It was first sung in 1987".
+            log("web evidence is off-topic; not answering from it")
+            onSentence(NOT_FOUND_MSG)
+            return NOT_FOUND_MSG
+        }
         if (llm?.isLoaded != true) {
             onSentence(result.spoken)
             return result.spoken
         }
+        lastGroundedSent = prompts.userPayload(userText, memoryContext = "Web search: $evidence")
         return streamSayResponse(
             prompt = prompts.prompt(history = turns, user = userText, memoryContext = "Web search: $evidence"),
             grammar = prompts.sayOnlyGrammar(),
@@ -714,6 +769,16 @@ class Brain(
             fallback = result.spoken,
             onSentence = onSentence,
         ).let(::stripPromptNotes).ifBlank { result.spoken }
+    }
+
+    /** Search results must share key words with the question, or they answer a different question. */
+    internal fun evidenceIsRelevant(query: String, evidence: String): Boolean {
+        val keys = query.lowercase().split(Regex("[^a-z0-9]+")).filter { it.length > 2 && it !in QUERY_STOP_WORDS }.toSet()
+        if (keys.isEmpty()) return true
+        val text = evidence.lowercase()
+        // Stem match ("india" in "indian", "anthem" in "anthems"): first 5 letters at a word start.
+        val hits = keys.count { Regex("\\b" + Regex.escape(it.take(5))).containsMatchIn(text) }
+        return hits >= 1
     }
 
     private fun unsureReply(heardConfidence: Float, offline: Boolean): String = when {
@@ -733,12 +798,15 @@ class Brain(
     private fun replyMaxTokens(): Int =
         if (healthGuard?.level() == HealthGuard.Level.WARM) 80 else 160
 
+    /** The user message [groundedAnswer] last sent (question + web evidence), for [Turn.sent]. */
+    @Volatile private var lastGroundedSent: String? = null
+
     private fun activeHistory(): List<Turn> = synchronized(historyLock) { history.toList() }
 
-    private fun recordTurn(user: String, assistant: String) {
+    private fun recordTurn(user: String, assistant: String, sent: String? = null) {
         val now = clockMillis()
         synchronized(historyLock) {
-            history.add(Turn(user = user, assistant = assistant))
+            history.add(Turn(user = user, assistant = assistant, sent = sent))
             // Drop a whole window at a time (see PromptBuilder.selectHistory) so the prompt prefix, and with it the
             // KV cache, stays the same for most turns instead of shifting by one turn every time.
             if (history.size > 2 * PromptBuilder.MAX_HISTORY_TURNS) {
@@ -789,6 +857,14 @@ class Brain(
             """^(and|what about|how about|and what about|what of|and the|same for|also)\b""",
             RegexOption.IGNORE_CASE,
         )
+        /** "Tell me one more fact about it": the topic is in the previous question (it found a random fun-facts page). */
+        private val QUERY_STOP_WORDS = setOf(
+            "who", "what", "when", "where", "why", "how", "which", "whose", "the", "and", "was", "were", "is", "are", "did",
+            "does", "do", "for", "about", "tell", "me", "more", "one", "fact", "facts", "its", "it's", "that", "this", "his",
+            "her", "their", "them", "they", "him", "she", "can", "you", "your", "with", "from", "into", "first", "some", "any",
+            "much", "many", "long", "old", "has", "have", "had", "been", "of", "in", "on", "to", "a",
+        )
+        private val REFERS_BACK = Regex("""\b(it|its|it's|that|this|those|these|he|she|him|her|his|they|them|their)\b""", RegexOption.IGNORE_CASE)
         /** The model saying it has no answer ("I don't have information about...") — treated like low confidence. */
         private val HEDGE = Regex(
             """^(i'?m not sure|i am not sure|i don'?t (have|know)|i do not (have|know)|i'?m (unable|not able)|i cannot|i can'?t (find|access|provide|tell))\b""",

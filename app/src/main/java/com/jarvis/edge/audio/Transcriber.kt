@@ -167,15 +167,20 @@ class SherpaLiveTranscriber(
     }
 
     private fun buildRecognizer(hotwordsFile: File?): OnlineRecognizer {
+        // asr-zipformer ships encoder-epoch-99-avg-1*.onnx and has the bpe vocab hotwords need; any other streaming
+        // model (asr-live, e.g. kroko) uses plain encoder/decoder/joiner names and never gets hotwords.
+        val legacy = File(modelDir, "encoder-epoch-99-avg-1.int8.onnx").exists() ||
+            File(modelDir, "encoder-epoch-99-avg-1.onnx").exists()
+        val suffix = if (legacy) "-epoch-99-avg-1" else ""
         val transducer = OnlineTransducerModelConfig(
-            encoder = pickOnnx(modelDir, "encoder-epoch-99-avg-1").absolutePath,
-            decoder = pickOnnx(modelDir, "decoder-epoch-99-avg-1").absolutePath,
-            joiner = pickOnnx(modelDir, "joiner-epoch-99-avg-1").absolutePath,
+            encoder = pickOnnx(modelDir, "encoder$suffix").absolutePath,
+            decoder = pickOnnx(modelDir, "decoder$suffix").absolutePath,
+            joiner = pickOnnx(modelDir, "joiner$suffix").absolutePath,
         )
         // A hotwords file is only safe with modeling_unit=bpe and a bpe.vocab: otherwise sherpa-onnx
         // calls exit() (not catchable) while encoding them, killing the whole service.
         val vocabFile = hotwordsFile?.let { File(it.parentFile ?: modelDir, "zipformer_bpe.vocab") }
-        val useHotwords = hotwordsFile?.isFile == true && hotwordsFile.length() > 0L && vocabFile != null &&
+        val useHotwords = legacy && hotwordsFile?.isFile == true && hotwordsFile.length() > 0L && vocabFile != null &&
             BpeVocab.writeFromTokens(File(modelDir, "tokens.txt"), vocabFile)
         val modelConfig = OnlineModelConfig(
             transducer = transducer,
@@ -183,7 +188,7 @@ class SherpaLiveTranscriber(
             numThreads = numThreads,
             debug = false,
             provider = "cpu",
-            modelType = "zipformer",
+            modelType = if (legacy) "zipformer" else "",
             modelingUnit = if (useHotwords) "bpe" else "",
             bpeVocab = if (useHotwords) vocabFile!!.absolutePath else "",
         )
