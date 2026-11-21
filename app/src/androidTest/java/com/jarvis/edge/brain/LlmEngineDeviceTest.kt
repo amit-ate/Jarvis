@@ -60,6 +60,47 @@ class LlmEngineDeviceTest {
     }
 
     @Test
+    fun stateRoundtripSkipsPrefill() {
+        val engine = LlamaJniEngine()
+        val f = File.createTempFile("kvtest", ".bin")
+        try {
+            engine.load(modelFile, contextTokens = 2048)
+            val builder = PromptBuilder(testTools(), "chatml")
+            engine.generate(builder.prompt(emptyList(), "hello"), builder.grammar()) { true }
+            assertTrue(engine.saveState(f))
+            engine.unload()
+            engine.load(modelFile, contextTokens = 2048)
+            assertTrue(engine.loadState(f))
+            val stats = engine.generate(
+                builder.prompt(emptyList(), "what is two plus two"),
+                builder.grammar(),
+            ) { true }
+            assertTrue("Expected cachedTokens >= 100, got ${stats.cachedTokens}", stats.cachedTokens >= 100)
+            assertTrue("Expected firstTokenMs <= 1500, got ${stats.firstTokenMs}", stats.firstTokenMs <= 1500)
+        } finally {
+            engine.unload()
+            f.delete()
+        }
+    }
+
+    @Test
+    fun corruptStateFileIsRejected() {
+        val engine = LlamaJniEngine()
+        val f = File.createTempFile("kvtest", ".bin")
+        try {
+            engine.load(modelFile, contextTokens = 2048)
+            f.writeBytes(ByteArray(100).also { java.util.Random(7).nextBytes(it) })
+            assertFalse(engine.loadState(f))
+            val builder = PromptBuilder(testTools(), "chatml")
+            val stats = engine.generate(builder.prompt(emptyList(), "hello"), builder.grammar(), maxTokens = 16) { true }
+            assertTrue(stats.outputTokens > 0)
+        } finally {
+            engine.unload()
+            f.delete()
+        }
+    }
+
+    @Test
     fun outputAlwaysParsesUnderGrammar() {
         val engine = LlamaJniEngine()
         engine.load(modelFile, contextTokens = 2048)

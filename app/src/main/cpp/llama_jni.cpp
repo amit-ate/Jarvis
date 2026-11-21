@@ -1,5 +1,6 @@
 #include <android/log.h>
 #include <jni.h>
+#include <fcntl.h>
 #include <sched.h>
 #include <unistd.h>
 
@@ -7,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -641,6 +643,74 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeSetLoraAdapters(
   llama_memory_clear(llama_get_memory(session->ctx), true);
   session->prev_tokens.clear();
   return static_cast<jint>(rc);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_jarvis_edge_brain_LlamaJniEngine_nativeSaveState(JNIEnv *env, jobject,
+                                                          jlong handle,
+                                                          jstring path) {
+  auto *session = reinterpret_cast<LlmSession *>(handle);
+  if (!session || !session->ctx || !path)
+    return JNI_FALSE;
+  const char *c_path = env->GetStringUTFChars(path, nullptr);
+  if (!c_path)
+    return JNI_FALSE;
+  const std::string final_path(c_path);
+  env->ReleaseStringUTFChars(path, c_path);
+  const std::string tmp_path = final_path + ".tmp";
+
+  std::lock_guard<std::mutex> lock(session->mu);
+  if (session->prev_tokens.empty())
+    return JNI_FALSE;
+  const size_t written = llama_state_seq_save_file(
+      session->ctx, tmp_path.c_str(), 0, session->prev_tokens.data(),
+      session->prev_tokens.size());
+  if (written == 0) {
+    std::remove(tmp_path.c_str());
+    return JNI_FALSE;
+  }
+  const int fd = open(tmp_path.c_str(), O_RDONLY);
+  if (fd < 0) {
+    std::remove(tmp_path.c_str());
+    return JNI_FALSE;
+  }
+  const bool synced = fsync(fd) == 0;
+  close(fd);
+  if (!synced || std::rename(tmp_path.c_str(), final_path.c_str()) != 0) {
+    std::remove(tmp_path.c_str());
+    return JNI_FALSE;
+  }
+  return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLoadState(JNIEnv *env, jobject,
+                                                          jlong handle,
+                                                          jstring path) {
+  auto *session = reinterpret_cast<LlmSession *>(handle);
+  if (!session || !session->ctx || !path)
+    return JNI_FALSE;
+  const char *c_path = env->GetStringUTFChars(path, nullptr);
+  if (!c_path)
+    return JNI_FALSE;
+  const std::string file_path(c_path);
+  env->ReleaseStringUTFChars(path, c_path);
+
+  std::lock_guard<std::mutex> lock(session->mu);
+  llama_memory_clear(llama_get_memory(session->ctx), true);
+  session->prev_tokens.clear();
+  const size_t n_ctx = llama_n_ctx(session->ctx);
+  std::vector<llama_token> buf(n_ctx);
+  size_t n_out = 0;
+  const size_t read = llama_state_seq_load_file(
+      session->ctx, file_path.c_str(), 0, buf.data(), buf.size(), &n_out);
+  if (read == 0 || n_out == 0 || n_out > buf.size()) {
+    llama_memory_clear(llama_get_memory(session->ctx), true);
+    session->prev_tokens.clear();
+    return JNI_FALSE;
+  }
+  session->prev_tokens.assign(buf.begin(), buf.begin() + n_out);
+  return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL

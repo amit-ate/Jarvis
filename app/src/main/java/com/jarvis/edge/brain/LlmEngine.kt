@@ -57,6 +57,10 @@ interface LlmEngine {
         ilEnd: Int,
     ): FloatArray = FloatArray(0)
 
+    fun saveState(file: File): Boolean = false
+
+    fun loadState(file: File): Boolean = false
+
     fun unload()
     val isLoaded: Boolean
 }
@@ -196,6 +200,22 @@ class LlamaJniEngine : LlmEngine {
         }
     }
 
+    override fun saveState(file: File): Boolean {
+        synchronized(this) {
+            val h = handle
+            if (h == 0L) return false
+            return nativeSaveState(h, file.absolutePath)
+        }
+    }
+
+    override fun loadState(file: File): Boolean {
+        synchronized(this) {
+            val h = handle
+            if (h == 0L || !file.isFile) return false
+            return nativeLoadState(h, file.absolutePath)
+        }
+    }
+
     override fun unload() {
         synchronized(this) {
             val h = handle
@@ -281,6 +301,8 @@ class LlamaJniEngine : LlmEngine {
         ilStart: Int,
         ilEnd: Int,
     ): FloatArray
+    private external fun nativeSaveState(handle: Long, path: String): Boolean
+    private external fun nativeLoadState(handle: Long, path: String): Boolean
     private external fun nativeUnload(handle: Long)
 
     companion object {
