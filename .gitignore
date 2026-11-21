@@ -8,3 +8,5 @@ bench/out-a73/
 .DS_Store
 *.apk
 *.aab
+.worktrees/
+.superpowers/
