@@ -23,7 +23,10 @@ import com.jarvis.edge.audio.SimdAudio
 import com.jarvis.edge.audio.SpeechSegmenter
 import com.jarvis.edge.audio.TranscriptArbiter
 import com.jarvis.edge.brain.Brain
+import com.jarvis.edge.brain.ControlVector
+import com.jarvis.edge.brain.ControlVectorCodec
 import com.jarvis.edge.brain.EmbeddingEngine
+import com.jarvis.edge.brain.ExpertDomain
 import com.jarvis.edge.brain.ExpertRouter
 import com.jarvis.edge.brain.FastIntents
 import com.jarvis.edge.brain.LlamaEmbeddingEngine
@@ -46,6 +49,8 @@ import com.jarvis.edge.hud.ResourceStatusUi
 import com.jarvis.edge.hud.SetupActivity
 import com.jarvis.edge.hud.ShortcutItemUi
 import com.jarvis.edge.hud.VocabItemUi
+import com.jarvis.edge.mind.BrainEvolver
+import com.jarvis.edge.mind.EmbeddingMigrator
 import com.jarvis.edge.mind.Episode
 import com.jarvis.edge.mind.HotwordsWriter
 import com.jarvis.edge.mind.InitiativeEngine
@@ -54,6 +59,8 @@ import com.jarvis.edge.mind.MindForgetTool
 import com.jarvis.edge.mind.MindRecallTool
 import com.jarvis.edge.mind.MindRememberTool
 import com.jarvis.edge.mind.MindStatusTool
+import com.jarvis.edge.mind.ModelVersion
+import com.jarvis.edge.mind.OnDeviceEvalGate
 import com.jarvis.edge.mind.ReflectionWorker
 import com.jarvis.edge.mind.RemindTool
 import com.jarvis.edge.mind.SelfModel
@@ -96,6 +103,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
 
@@ -121,6 +131,7 @@ class JarvisService : Service() {
 
     private val manualWakeRequested = AtomicBoolean(false)
     private val initiativeSpeaking = AtomicBoolean(false)
+    private val evolutionRunning = AtomicBoolean(false)
 
     @Volatile private var lastInteractionMs: Long = System.currentTimeMillis()
     @Volatile private var lastReflectionMs: Long = 0L
@@ -217,6 +228,11 @@ class JarvisService : Service() {
                     VectorMath.simpleHashEmbed(text)
                 }
             }
+            var loadedEmbedDim = 0
+            if (ggufEmbedder != null && ggufEmbedder.isLoaded) {
+                loadedEmbedDim = runCatching { ggufEmbedder.embed("jarvis").size }.getOrDefault(0)
+                android.util.Log.i("JarvisMind", "Neural embedder loaded (${loadedEmbedDim}-d) from ${embedFile?.name}")
+            }
 
             val tokensFile = File(paths.root, "asr-zipformer/tokens.txt")
             val hotwordsWriter = if (tokensFile.isFile) HotwordsWriter.fromTokensFile(tokensFile) else null
@@ -298,6 +314,19 @@ class JarvisService : Service() {
 
             val adaptersDir = File(paths.root, "adapters")
             val expertRouter = ExpertRouter.fromManifestFile(File(adaptersDir, "experts.json"), adaptersDir)
+            fun applyModelVersionToRouter(version: ModelVersion?) {
+                val rawPath = version?.adapterPath?.takeIf { it.isNotBlank() }
+                val vec = if (rawPath != null) {
+                    val candidate = File(rawPath).let { if (it.isAbsolute) it else File(adaptersDir, rawPath) }
+                    if (candidate.isFile) ControlVectorCodec.read(candidate) else null
+                } else {
+                    null
+                }
+                expertRouter.setEvolvedControlVector(vec)
+                _activeExpert.value = expertRouter.activeExpertSummary(ExpertDomain.CONVERSATION)
+            }
+            applyModelVersionToRouter(mind.listModelVersions().firstOrNull { it.active })
+
             val initiativeEngine = InitiativeEngine(store = mind)
 
             val selfModel = SelfModel(
@@ -310,6 +339,19 @@ class JarvisService : Service() {
                 lastMotionMsProvider = { latestMotionMs },
                 lastReflectionMsProvider = { lastReflectionMs },
             )
+
+            if (loadedEmbedDim > 0) {
+                launch(Dispatchers.IO) {
+                    SimdAudio.pinCurrentThreadToLittleCores()
+                    val migrated = runCatching {
+                        EmbeddingMigrator.migrateIfNeeded(mind, loadedEmbedDim, embedFn)
+                    }.getOrDefault(0)
+                    if (migrated > 0) {
+                        android.util.Log.i("JarvisMind", "Migrated $migrated facts to ${loadedEmbedDim}-d embeddings")
+                        publishMindState(mind, selfModel)
+                    }
+                }
+            }
 
             val timerScheduler = TimerScheduler(this@JarvisService)
             val baseIrJson = assets.open("ir/codes.json").bufferedReader().use { it.readText() }
@@ -355,6 +397,12 @@ class JarvisService : Service() {
                     store = mind,
                     selfSnapshotProvider = { selfModel.capture() },
                     onMuteRequested = { durationMs -> initiativeEngine.muteFor(durationMs) },
+                    onVersionActivated = { rolledBack ->
+                        applyModelVersionToRouter(rolledBack)
+                        if (jniEngine.isLoaded && _state.value == AssistantState.IDLE) {
+                            runCatching { expertRouter.selectAndActivate("", jniEngine) }
+                        }
+                    },
                 ),
                 IrTool(irCodesProvider, IrTool.androidTransmitter(this@JarvisService)),
                 ReadTextTool(
@@ -378,6 +426,7 @@ class JarvisService : Service() {
             val prompts = PromptBuilder(tools, templateName = "chatml")
             if (jniEngine.isLoaded) {
                 runCatching {
+                    expertRouter.selectAndActivate("", jniEngine)
                     jniEngine.generate(prompts.prompt(emptyList(), "hi"), prompts.sayOnlyGrammar(), maxTokens = 1) { false }
                 }
             }
@@ -398,7 +447,7 @@ class JarvisService : Service() {
                 selfStateProvider = { SelfModel.toPromptLine(selfModel.capture()) },
                 memoryProvider = { query -> buildMemoryContext(mind, embedFn(query)) },
                 onEpisodeComplete = { userText, reply, toolCall, echoed ->
-                    _activeExpert.value = expertRouter.classify(userText).name
+                    _activeExpert.value = expertRouter.activeExpertSummary(expertRouter.classify(userText))
                     val argsJson = toolCall?.let { JSONObject(it.args).toString() }
                     mind.addEpisode(
                         Episode(
@@ -495,6 +544,82 @@ class JarvisService : Service() {
                 },
             )
 
+            val evalGate = OnDeviceEvalGate()
+            val brainEvolver = BrainEvolver()
+
+            fun runEvolutionCycle(manual: Boolean): BrainEvolver.EvolutionResult? {
+                if (activeLlm == null || !activeLlm.isLoaded) return null
+                if (!evolutionRunning.compareAndSet(false, true)) return null
+                return try {
+                    val snap = selfModel.capture()
+                    val isIdle = _state.value == AssistantState.IDLE
+                    if (!brainEvolver.canRunOvernight(snap, isIdle = isIdle, manualOverride = manual)) {
+                        return null
+                    }
+                    val (nEmbd, nLayer) = activeLlm.modelGeometry()
+                    val prevVersion = mind.listModelVersions().firstOrNull { it.active }
+                    val prevVec = prevVersion?.adapterPath?.takeIf { it.isNotBlank() }?.let { rawPath ->
+                        val f = File(rawPath).let { if (it.isAbsolute) it else File(adaptersDir, rawPath) }
+                        if (f.isFile) ControlVectorCodec.read(f) else null
+                    }
+                    val res = brainEvolver.evolveOnce(
+                        store = mind,
+                        adaptersDir = adaptersDir,
+                        baseModelName = paths.llmFileName,
+                        nEmbd = nEmbd,
+                        nLayer = nLayer,
+                        previousAdapterData = prevVec?.data,
+                        previousIlStart = prevVec?.ilStart ?: 1,
+                        previousIlEnd = prevVec?.ilEnd ?: 1,
+                        trainVectorFn = { pos, neg, ilStart, ilEnd ->
+                            activeLlm.trainControlVector(pos, neg, ilStart, ilEnd)
+                        },
+                        applyVectorFn = { data, vecEmbd, ilStart, ilEnd ->
+                            val vec = if (data != null && vecEmbd > 0 && data.size >= vecEmbd) {
+                                ControlVector(
+                                    nEmbd = vecEmbd,
+                                    nLayersMinus1 = data.size / vecEmbd,
+                                    ilStart = ilStart,
+                                    ilEnd = ilEnd,
+                                    data = data,
+                                )
+                            } else {
+                                null
+                            }
+                            expertRouter.setEvolvedControlVector(vec)
+                        },
+                        evalGate = evalGate,
+                        generateFn = { probe ->
+                            val sampling = expertRouter.selectAndActivate(probe.prompt, activeLlm)
+                            val sb = StringBuilder()
+                            activeLlm.generate(
+                                prompt = prompts.prompt(emptyList(), probe.prompt),
+                                grammar = prompts.grammar(),
+                                maxTokens = 72,
+                                sampling = sampling,
+                            ) { piece ->
+                                if (_state.value != AssistantState.IDLE) return@generate false
+                                sb.append(piece)
+                                true
+                            }
+                            sb.toString().trim()
+                        },
+                        isInterrupted = { _state.value != AssistantState.IDLE },
+                    )
+                    applyModelVersionToRouter(mind.listModelVersions().firstOrNull { it.active })
+                    if (activeLlm.isLoaded && _state.value == AssistantState.IDLE) {
+                        runCatching { expertRouter.selectAndActivate("", activeLlm) }
+                    }
+                    android.util.Log.i(
+                        "JarvisMind",
+                        "Evolution cycle finished (manual=$manual, attempted=${res.attempted}, adopted=${res.adopted}): ${res.reason}",
+                    )
+                    res
+                } finally {
+                    evolutionRunning.set(false)
+                }
+            }
+
             MindUiBridge.actions = object : MindUiActions {
                 override fun undoJournal(id: Long) {
                     serviceScope.launch(Dispatchers.IO) {
@@ -540,7 +665,17 @@ class JarvisService : Service() {
 
                 override fun activateVersion(id: Long) {
                     serviceScope.launch(Dispatchers.IO) {
-                        mind.activateModelVersion(id)
+                        val ok = mind.activateModelVersion(id)
+                        val active = mind.listModelVersions().firstOrNull { it.active }
+                        applyModelVersionToRouter(active)
+                        if (activeLlm != null && activeLlm.isLoaded && _state.value == AssistantState.IDLE) {
+                            runCatching { expertRouter.selectAndActivate("", activeLlm) }
+                        }
+                        statusNotice = if (ok && active != null) {
+                            "Activated brain v${active.id} (${active.adapterPath?.let { File(it).name } ?: "base"})"
+                        } else {
+                            "Brain version #$id not found"
+                        }
                         publishMindState(mind, selfModel)
                     }
                 }
@@ -585,6 +720,27 @@ class JarvisService : Service() {
                     }
                 }
 
+                override fun triggerEvolution() {
+                    serviceScope.launch(Dispatchers.IO) {
+                        if (activeLlm == null || !activeLlm.isLoaded) {
+                            statusNotice = "Cannot evolve: chat LLM is not loaded"
+                            publishMindState(mind, selfModel)
+                            return@launch
+                        }
+                        statusNotice = "Running Stage 4 control-vector evolution..."
+                        publishMindState(mind, selfModel)
+                        val result = runEvolutionCycle(manual = true)
+                        statusNotice = result?.let {
+                            if (it.adopted) {
+                                "Evolved brain adopted (eval=${"%.1f".format(Locale.US, (it.candidateEval?.evalScore ?: 0f) * 100f)}%)"
+                            } else {
+                                "Evolution skipped/rolled back: ${it.reason}"
+                            }
+                        } ?: "Evolution skipped (paused, busy, or thermal guard)"
+                        publishMindState(mind, selfModel)
+                    }
+                }
+
                 override fun refresh() {
                     serviceScope.launch(Dispatchers.IO) {
                         publishMindState(mind, selfModel)
@@ -594,7 +750,7 @@ class JarvisService : Service() {
 
             launch(Dispatchers.IO) { publishMindState(mind, selfModel) }
 
-            // Background idle reflection loop pinned to little cores (cpu0..3).
+            // Background idle reflection + overnight Stage 4 evolution loop pinned to little cores (cpu0..3).
             reflectionJob?.cancel()
             reflectionJob = serviceScope.launch(Dispatchers.IO) {
                 SimdAudio.pinCurrentThreadToLittleCores()
@@ -617,6 +773,22 @@ class JarvisService : Service() {
                                 runCatching { live.updateHotwords(hotwordsFile) }
                             }
                             publishMindState(mind, selfModel)
+                        }
+                        val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                        val lastEvolveDay = mind.getMeta("last_evolution_day")
+                        if (activeLlm != null && activeLlm.isLoaded &&
+                            lastEvolveDay != todayKey &&
+                            brainEvolver.canRunOvernight(
+                                snapshot = snap,
+                                isIdle = (_state.value == AssistantState.IDLE),
+                                manualOverride = false,
+                            )
+                        ) {
+                            val evoResult = runEvolutionCycle(manual = false)
+                            if (evoResult != null && evoResult.attempted) {
+                                mind.setMeta("last_evolution_day", todayKey)
+                                publishMindState(mind, selfModel)
+                            }
                         }
                     }
                 }

@@ -196,6 +196,7 @@ class MindStatusTool(
     private val selfSnapshotProvider: () -> SelfStateSnapshot,
     private val onMuteRequested: (Long) -> Unit = {},
     private val clockMs: () -> Long = System::currentTimeMillis,
+    private val onVersionActivated: (ModelVersion) -> Unit = {},
 ) : Tool {
     override val name = "mind_status"
     override val description = "Inspect Jarvis self-status, learned knowledge, pause/resume learning, quiet mode, or brain rollback"
@@ -256,6 +257,7 @@ class MindStatusTool(
             "rollback_brain" -> {
                 val rolledBack = store.rollbackModelVersion()
                     ?: return ToolResult("No previous brain version is available to roll back to.", ok = false)
+                onVersionActivated(rolledBack)
                 ToolResult(
                     spoken = "Rolled back brain to ${rolledBack.baseModel}.",
                     ok = true,
