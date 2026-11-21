@@ -10,6 +10,10 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORK=${WORK:-$HOME/.cache/jarvis-voice-train}
+# Training environment (NeMo etc.) set up once in ~/.cache/jarvis-voice-train/venv; PY overrides it.
+if [ -z "${PY:-}" ] && [ -x "$HOME/.cache/jarvis-voice-train/venv/bin/python" ]; then
+  PY="$HOME/.cache/jarvis-voice-train/venv/bin/python"
+fi
 PY=${PY:-python3}
 EPOCHS=${EPOCHS:-10}
 mkdir -p "$WORK"
