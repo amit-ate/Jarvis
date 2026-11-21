@@ -101,6 +101,26 @@ class BrainEvolverTest {
     }
 
     @Test
+    fun `blank-reply bad episode is never used as a negative`() {
+        val evolver = BrainEvolver()
+        val good = Episode(
+            id = 1L, timestampMs = 1000L, liveTranscript = "good q", accurateTranscript = "good q",
+            chosenTranscript = "good q", reply = "good answer", echoed = false, outcomeOk = true,
+        )
+        val stopped = Episode(
+            id = 2L, timestampMs = 2000L, liveTranscript = "stopped q", accurateTranscript = "stopped q",
+            chosenTranscript = "stopped q", reply = "", echoed = false, outcomeOk = false,
+        )
+        val bad = Episode(
+            id = 3L, timestampMs = 3000L, liveTranscript = "echo q", accurateTranscript = "echo q",
+            chosenTranscript = "echo q", reply = "echo q", echoed = true, outcomeOk = false,
+        )
+        val (_, neg) = evolver.buildContrastivePairs(listOf(good, stopped, bad), emptyList())
+        assertTrue(neg.none { "stopped q" in it })
+        assertTrue(neg.any { "User: echo q\nAssistant: echo q" in it })
+    }
+
+    @Test
     fun `writeJvec writes exact 24-byte little-endian header and float32 payload`(@TempDir tempDir: Path) {
         val evolver = BrainEvolver()
         val outFile = File(tempDir.toFile(), "adapters/test_vec.jvec")

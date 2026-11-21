@@ -496,7 +496,10 @@ class JarvisService : Service() {
                     if (kvResult == KvRestoreResult.REJECTED) {
                         mind.recordRecoveryJournal("Discarded an unusable saved model memory; rebuilt it from text.")
                     }
-                    jniEngine.generate(prompts.prompt(emptyList(), "hi"), prompts.sayOnlyGrammar(), maxTokens = 1) { false }
+                    // A warm-up generate would trim the restored conversation KV back to the fixed prefix.
+                    if (kvResult != KvRestoreResult.RESTORED) {
+                        jniEngine.generate(prompts.prompt(emptyList(), "hi"), prompts.sayOnlyGrammar(), maxTokens = 1) { false }
+                    }
                 }
             }
             val activeLlm = if (missingLlm.isEmpty()) jniEngine else null
@@ -610,16 +613,16 @@ class JarvisService : Service() {
                 // Write the episode just before the brain answers so an abrupt kill leaves a trace.
                 onRespondStart = { chosen ->
                     openEpisodeId?.let { prev ->
-                        runCatching { mind.completeEpisode(prev, "[abandoned]", null, null, true) }
+                        runCatching { mind.completeEpisode(prev, reply = "", toolName = null, toolArgsJson = null, echoed = false, outcomeOk = false) }
                     }
                     openEpisodeId = runCatching {
                         mind.beginEpisode(System.currentTimeMillis(), lastLiveRaw, lastAccurateRaw, chosen)
                     }.getOrNull()
                 },
-                onRespondInterrupted = { spoken ->
+                onRespondInterrupted = { _ ->
                     openEpisodeId?.let { id ->
                         openEpisodeId = null
-                        runCatching { mind.completeEpisode(id, spoken.trim().ifBlank { "[stopped]" }, null, null, true) }
+                        runCatching { mind.completeEpisode(id, reply = "", toolName = null, toolArgsJson = null, echoed = false, outcomeOk = false) }
                     }
                 },
                 onCorrectionConfirmed = { heard, meant ->
@@ -663,6 +666,8 @@ class JarvisService : Service() {
             launch(Dispatchers.IO) {
                 _state.collectLatest { s ->
                     if (s == AssistantState.IDLE) {
+                        // Every return to IDLE checkpoints working state (pending confirmations, cleared state).
+                        runCatching { saveWorkingStateFn?.invoke() }
                         delay(KV_IDLE_SAVE_DELAY_MS)
                         withContext(Dispatchers.Default) { saveKv() }
                     }

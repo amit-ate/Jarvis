@@ -70,7 +70,7 @@ class BrainEvolver(
             it.outcomeOk && !it.echoed && it.chosenTranscript.isNotBlank() && it.reply.isNotBlank()
         }
         val badEpisodes = episodes.filter {
-            (it.echoed || !it.outcomeOk) && it.chosenTranscript.isNotBlank()
+            (it.echoed || !it.outcomeOk) && it.chosenTranscript.isNotBlank() && it.reply.isNotBlank()
         }
 
         for ((idx, good) in goodEpisodes.withIndex()) {

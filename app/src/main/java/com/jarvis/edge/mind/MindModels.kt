@@ -15,6 +15,7 @@ data class Episode(
     val echoed: Boolean = false,
     val outcomeOk: Boolean = true,
     val reflected: Boolean = false,
+    val completed: Boolean = true,
 )
 
 /**

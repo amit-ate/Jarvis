@@ -43,9 +43,12 @@ class Recovery(
             val at = state?.savedAtMs
             val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(at ?: previousStart))
             val suffix = if (interrupted > 0) " ($interrupted unfinished replies)" else ""
-            repo.recordRecoveryJournal(
-                "I was shut down unexpectedly at $time; restored my conversation and learning progress.$suffix",
-            )
+            val body = if (state != null) {
+                "restored my conversation and learning progress."
+            } else {
+                "my learning is safe but I couldn't restore the conversation."
+            }
+            repo.recordRecoveryJournal("I was shut down unexpectedly at $time; $body$suffix")
         }
         return RecoveryReport(unclean, state?.savedAtMs, interrupted, orphans, temps)
     }

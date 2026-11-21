@@ -50,6 +50,35 @@ class RecoveryTest {
     }
 
     @Test
+    fun `unclean start journals restored text only when working state was restored`() {
+        val state = WorkingState(
+            savedAtMs = 1_000L, history = emptyList(), lastTurnMs = 0L, pendingHeard = null,
+            pendingCandidate = null, initiativeMutedUntilMs = 0L, openEpisodeId = null,
+        )
+        repo.setMeta("working_state", WorkingStateCodec.encode(state))
+        val r = recovery()
+        r.onStart()
+        r.onStart()
+        assertTrue(
+            recoveryJournal().single().summary.matches(
+                Regex("I was shut down unexpectedly at \\d\\d:\\d\\d; restored my conversation and learning progress\\."),
+            ),
+        )
+    }
+
+    @Test
+    fun `unclean start without working state journals learning-safe text`() {
+        val r = recovery()
+        r.onStart()
+        r.onStart()
+        assertTrue(
+            recoveryJournal().single().summary.matches(
+                Regex("I was shut down unexpectedly at \\d\\d:\\d\\d; my learning is safe but I couldn't restore the conversation\\."),
+            ),
+        )
+    }
+
+    @Test
     fun `orphan cleanup spares experts and referenced versions`() {
         val r = recovery()
         val dir = File(tmp, "adapters")

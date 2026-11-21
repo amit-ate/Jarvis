@@ -14,13 +14,20 @@ import java.io.File
 interface MindRepository {
     fun addEpisode(episode: Episode): Episode
 
-    /** Write-ahead: persists the episode (empty reply, not ok) before Jarvis speaks. Returns its id. */
+    /** Write-ahead: persists the episode (empty reply, not ok, not completed) before Jarvis speaks. Returns its id. */
     fun beginEpisode(timestampMs: Long, live: String, accurate: String, chosen: String): Long
 
-    /** Fills in the reply once spoken; outcome is ok unless the reply was an echo. */
-    fun completeEpisode(id: Long, reply: String, toolName: String?, toolArgsJson: String?, echoed: Boolean)
+    /** Fills in the reply once spoken and marks the episode completed; outcome is ok unless echoed (or overridden). */
+    fun completeEpisode(
+        id: Long,
+        reply: String,
+        toolName: String?,
+        toolArgsJson: String?,
+        echoed: Boolean,
+        outcomeOk: Boolean = !echoed,
+    )
 
-    /** Episodes begun but never completed (empty reply) at or after [sinceMs]. */
+    /** Episodes begun but never completed at or after [sinceMs]. */
     fun listInterruptedEpisodes(sinceMs: Long): List<Episode>
     fun listUnreflectedEpisodes(limit: Int = 100): List<Episode>
     fun listRecentEpisodes(limit: Int = 100): List<Episode>
@@ -257,6 +264,7 @@ class InMemoryMindStore(
                     reply = "",
                     outcomeOk = false,
                     reflected = false,
+                    completed = false,
                 )
             )
             id
@@ -268,6 +276,7 @@ class InMemoryMindStore(
         toolName: String?,
         toolArgsJson: String?,
         echoed: Boolean,
+        outcomeOk: Boolean,
     ) = synchronized(lock) {
         val idx = episodes.indexOfFirst { it.id == id }
         if (idx >= 0) {
@@ -276,13 +285,14 @@ class InMemoryMindStore(
                 toolName = toolName,
                 toolArgsJson = toolArgsJson,
                 echoed = echoed,
-                outcomeOk = !echoed,
+                outcomeOk = outcomeOk,
+                completed = true,
             )
         }
     }
 
     override fun listInterruptedEpisodes(sinceMs: Long): List<Episode> = synchronized(lock) {
-        episodes.filter { it.reply == "" && it.timestampMs >= sinceMs }.sortedBy { it.timestampMs }
+        episodes.filter { !it.completed && it.timestampMs >= sinceMs }.sortedBy { it.timestampMs }
     }
 
     override fun listUnreflectedEpisodes(limit: Int): List<Episode> = synchronized(lock) {
@@ -877,7 +887,8 @@ class SqliteMindStore(
                 tool_args_json TEXT,
                 echoed INTEGER NOT NULL DEFAULT 0,
                 outcome_ok INTEGER NOT NULL DEFAULT 1,
-                reflected INTEGER NOT NULL DEFAULT 0
+                reflected INTEGER NOT NULL DEFAULT 0,
+                completed INTEGER NOT NULL DEFAULT 1
             )
             """.trimIndent()
         )
@@ -985,7 +996,12 @@ class SqliteMindStore(
         db.execSQL("PRAGMA synchronous=NORMAL")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            // Existing rows count as completed.
+            db.execSQL("ALTER TABLE episodes ADD COLUMN completed INTEGER NOT NULL DEFAULT 1")
+        }
+    }
 
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
@@ -1073,6 +1089,7 @@ class SqliteMindStore(
             put("echoed", if (episode.echoed) 1 else 0)
             put("outcome_ok", if (episode.outcomeOk) 1 else 0)
             put("reflected", if (episode.reflected) 1 else 0)
+            put("completed", 1)
         }
         val id = db.insert("episodes", null, cv)
         return episode.copy(id = id)
@@ -1090,6 +1107,7 @@ class SqliteMindStore(
             put("echoed", 0)
             put("outcome_ok", 0)
             put("reflected", 0)
+            put("completed", 0)
         }
         return writableDatabase.insert("episodes", null, cv)
     }
@@ -1100,21 +1118,23 @@ class SqliteMindStore(
         toolName: String?,
         toolArgsJson: String?,
         echoed: Boolean,
+        outcomeOk: Boolean,
     ) {
         val cv = ContentValues().apply {
             put("reply", reply)
             if (toolName != null) put("tool_name", toolName) else putNull("tool_name")
             if (toolArgsJson != null) put("tool_args_json", toolArgsJson) else putNull("tool_args_json")
             put("echoed", if (echoed) 1 else 0)
-            put("outcome_ok", if (echoed) 0 else 1)
+            put("outcome_ok", if (outcomeOk) 1 else 0)
+            put("completed", 1)
         }
         writableDatabase.update("episodes", cv, "id = ?", arrayOf(id.toString()))
     }
 
     override fun listInterruptedEpisodes(sinceMs: Long): List<Episode> {
         return readableDatabase.rawQuery(
-            "SELECT id, timestamp_ms, live_transcript, accurate_transcript, chosen_transcript, reply, tool_name, tool_args_json, echoed, outcome_ok, reflected " +
-                "FROM episodes WHERE reply = '' AND timestamp_ms >= ? ORDER BY timestamp_ms ASC",
+            "SELECT id, timestamp_ms, live_transcript, accurate_transcript, chosen_transcript, reply, tool_name, tool_args_json, echoed, outcome_ok, reflected, completed " +
+                "FROM episodes WHERE completed = 0 AND timestamp_ms >= ? ORDER BY timestamp_ms ASC",
             arrayOf(sinceMs.toString()),
         ).use { c ->
             buildList {
@@ -1125,7 +1145,7 @@ class SqliteMindStore(
 
     override fun listUnreflectedEpisodes(limit: Int): List<Episode> {
         return readableDatabase.rawQuery(
-            "SELECT id, timestamp_ms, live_transcript, accurate_transcript, chosen_transcript, reply, tool_name, tool_args_json, echoed, outcome_ok, reflected " +
+            "SELECT id, timestamp_ms, live_transcript, accurate_transcript, chosen_transcript, reply, tool_name, tool_args_json, echoed, outcome_ok, reflected, completed " +
                 "FROM episodes WHERE reflected = 0 ORDER BY timestamp_ms ASC LIMIT ?",
             arrayOf(limit.toString()),
         ).use { c ->
@@ -1137,7 +1157,7 @@ class SqliteMindStore(
 
     override fun listRecentEpisodes(limit: Int): List<Episode> {
         return readableDatabase.rawQuery(
-            "SELECT id, timestamp_ms, live_transcript, accurate_transcript, chosen_transcript, reply, tool_name, tool_args_json, echoed, outcome_ok, reflected " +
+            "SELECT id, timestamp_ms, live_transcript, accurate_transcript, chosen_transcript, reply, tool_name, tool_args_json, echoed, outcome_ok, reflected, completed " +
                 "FROM episodes ORDER BY timestamp_ms DESC LIMIT ?",
             arrayOf(limit.toString()),
         ).use { c ->
@@ -1747,6 +1767,7 @@ class SqliteMindStore(
         echoed = c.getInt(8) == 1,
         outcomeOk = c.getInt(9) == 1,
         reflected = c.getInt(10) == 1,
+        completed = c.getInt(11) == 1,
     )
 
     private fun readFact(c: android.database.Cursor): Fact = Fact(
@@ -1783,6 +1804,6 @@ class SqliteMindStore(
     companion object {
         const val DB_NAME = "jarvis_mind.db"
         const val LEGACY_NOTES_DB = "jarvis_notes.db"
-        const val DB_VERSION = 1
+        const val DB_VERSION = 2
     }
 }

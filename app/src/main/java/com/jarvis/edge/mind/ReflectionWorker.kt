@@ -126,7 +126,7 @@ class ReflectionWorker(
             }
             val promptBatch = buildString {
                 // Interrupted episodes (empty reply) are never mined for facts.
-                for (ep in unreflected.filter { it.reply.isNotEmpty() }) {
+                for (ep in unreflected.filter { it.reply.isNotBlank() }) {
                     append("User: ").append(ep.chosenTranscript).append('\n')
                     if (ep.reply.isNotBlank()) {
                         append("Jarvis: ").append(ep.reply).append('\n')

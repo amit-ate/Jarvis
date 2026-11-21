@@ -273,6 +273,41 @@ class MindStoreTest {
         val ep = store.listRecentEpisodes(10).single { it.id == id }
         assertEquals("It's sunny", ep.reply)
         assertTrue(ep.outcomeOk)
+        assertTrue(ep.completed)
+        assertTrue(store.listInterruptedEpisodes(sinceMs = 0L).isEmpty())
+    }
+
+    @Test
+    fun `begun episode is not completed and addEpisode is completed`() {
+        val store = InMemoryMindStore()
+        val id = store.beginEpisode(5_000L, "live", "accurate", "chosen")
+        assertFalse(store.listRecentEpisodes(10).single { it.id == id }.completed)
+        val added = store.addEpisode(
+            Episode(timestampMs = 6_000L, liveTranscript = "a", accurateTranscript = "a", chosenTranscript = "a", reply = "b"),
+        )
+        assertTrue(store.listRecentEpisodes(10).single { it.id == added.id }.completed)
+    }
+
+    @Test
+    fun `tool-only turn with blank reply is completed and not listed as interrupted`() {
+        val store = InMemoryMindStore()
+        val id = store.beginEpisode(5_000L, "live", "accurate", "chosen")
+        store.completeEpisode(id, "", "torch", "{}", echoed = false)
+        val ep = store.listRecentEpisodes(10).single { it.id == id }
+        assertTrue(ep.completed)
+        assertTrue(ep.outcomeOk)
+        assertTrue(store.listInterruptedEpisodes(sinceMs = 0L).isEmpty())
+    }
+
+    @Test
+    fun `completeEpisode honours explicit outcomeOk false for stopped turns`() {
+        val store = InMemoryMindStore()
+        val id = store.beginEpisode(5_000L, "live", "accurate", "chosen")
+        store.completeEpisode(id, "", null, null, echoed = false, outcomeOk = false)
+        val ep = store.listRecentEpisodes(10).single { it.id == id }
+        assertTrue(ep.completed)
+        assertFalse(ep.outcomeOk)
+        assertFalse(ep.echoed)
         assertTrue(store.listInterruptedEpisodes(sinceMs = 0L).isEmpty())
     }
 }
