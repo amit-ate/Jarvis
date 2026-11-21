@@ -79,6 +79,33 @@ class BrainTest {
     }
 
     @Test
+    fun `concurrent snapshot and restore and respond do not throw`() {
+        val now = 10_000_000L
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Ok.") }
+        val brain = restoreBrain(now, fakeLlm)
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val snapshotter = Thread {
+            try {
+                while (!stop.get()) {
+                    brain.snapshotHistory()
+                    brain.restoreHistory(listOf(Turn("a", "SAY: b"), Turn("c", "SAY: d")), now)
+                }
+            } catch (t: Throwable) {
+                failure.set(t)
+            }
+        }
+        snapshotter.start()
+        try {
+            runBlocking { repeat(300) { brain.respond("tell me story $it") { } } }
+        } finally {
+            stop.set(true)
+            snapshotter.join()
+        }
+        assertEquals(null, failure.get())
+    }
+
+    @Test
     fun `stale history is not restored`() = runBlocking {
         val now = 10_000_000L
         val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Ok.") }

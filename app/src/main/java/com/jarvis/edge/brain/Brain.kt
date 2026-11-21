@@ -28,14 +28,17 @@ class Brain(
 ) {
     private val history = ArrayList<Turn>()
     private var lastTurnMillis: Long = 0L
+    private val historyLock = Any()
 
-    fun snapshotHistory(): Pair<List<Turn>, Long> = history.toList() to lastTurnMillis
+    fun snapshotHistory(): Pair<List<Turn>, Long> = synchronized(historyLock) { history.toList() to lastTurnMillis }
 
     fun restoreHistory(turns: List<Turn>, lastTurnMs: Long) {
         if (clockMillis() - lastTurnMs > HISTORY_IDLE_RESET_MS) return
-        history.clear()
-        history.addAll(turns.takeLast(PromptBuilder.MAX_HISTORY_TURNS))
-        lastTurnMillis = lastTurnMs
+        synchronized(historyLock) {
+            history.clear()
+            history.addAll(turns.takeLast(PromptBuilder.MAX_HISTORY_TURNS))
+            lastTurnMillis = lastTurnMs
+        }
     }
 
     private data class StreamResult(
@@ -46,8 +49,10 @@ class Brain(
 
     suspend fun respond(userText: String, onSentence: suspend (String) -> Unit) {
         val now = clockMillis()
-        if (lastTurnMillis != 0L && now - lastTurnMillis > HISTORY_IDLE_RESET_MS) {
-            history.clear()
+        synchronized(historyLock) {
+            if (lastTurnMillis != 0L && now - lastTurnMillis > HISTORY_IDLE_RESET_MS) {
+                history.clear()
+            }
         }
 
         // Fast path / learned shortcut is checked first so basic commands work even without a loaded LLM or while HOT.
@@ -359,19 +364,24 @@ class Brain(
     private fun replyMaxTokens(): Int =
         if (healthGuard?.level() == HealthGuard.Level.WARM) 80 else 160
 
-    private fun activeHistory(): List<Turn> = history.toList()
+    private fun activeHistory(): List<Turn> = synchronized(historyLock) { history.toList() }
 
     private fun recordTurn(user: String, assistant: String) {
-        history.add(Turn(user = user, assistant = assistant))
-        while (history.size > PromptBuilder.MAX_HISTORY_TURNS) {
-            history.removeAt(0)
+        val now = clockMillis()
+        synchronized(historyLock) {
+            history.add(Turn(user = user, assistant = assistant))
+            while (history.size > PromptBuilder.MAX_HISTORY_TURNS) {
+                history.removeAt(0)
+            }
+            lastTurnMillis = now
         }
-        lastTurnMillis = clockMillis()
     }
 
     fun clearHistory() {
-        history.clear()
-        lastTurnMillis = 0L
+        synchronized(historyLock) {
+            history.clear()
+            lastTurnMillis = 0L
+        }
     }
 
     private enum class StreamMode { UNKNOWN, SAY, TOOL }
