@@ -49,6 +49,14 @@ class ExpertRouter(
         }
     }
 
+    /** What was last applied to [engine] (LoRA handles+scales and control-vector signature); "none" when nothing is. */
+    fun appliedSignature(engine: LlmEngine): String = synchronized(this) {
+        // Handles are native pointers that change per run; name adapters by file path so the signature is stable.
+        val pathByHandle = loadedLoras[engine].orEmpty().entries.associate { it.value to it.key }
+        val loras = activeLoras[engine].orEmpty().joinToString(",") { "${pathByHandle[it.first] ?: "?"}@${it.second}" }
+        "lora[$loras]|cvec[${activeCvecSignatures[engine] ?: ""}]"
+    }
+
     fun activeExpertSummary(domain: ExpertDomain): String {
         val profile = profiles[domain] ?: DEFAULT_PROFILES[domain] ?: ExpertProfile(domain)
         val hasDomainCvec = resolveControlVector(profile) != null && profile.cvecScale != 0.0f

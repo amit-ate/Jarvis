@@ -441,10 +441,10 @@ class JarvisService : Service() {
                     onMuteRequested = { durationMs -> initiativeEngine.muteFor(durationMs) },
                     onVersionActivated = { rolledBack ->
                         applyModelVersionToRouter(rolledBack)
-                        onVersionChanged()
                         if (jniEngine.isLoaded && _state.value == AssistantState.IDLE) {
                             runCatching { expertRouter.selectAndActivate("", jniEngine) }
                         }
+                        onVersionChanged()
                     },
                 ),
                 IrTool(irCodesProvider, IrTool.androidTransmitter(this@JarvisService)),
@@ -471,7 +471,7 @@ class JarvisService : Service() {
             fun kvKey(): String = kvManager.key(
                 llmFile,
                 prompts.system(),
-                "${expertRouter.activeExpertSummary(ExpertDomain.CONVERSATION)}#${mind.listModelVersions().firstOrNull { it.active }?.id ?: 0}",
+                "${expertRouter.appliedSignature(jniEngine)}#${mind.listModelVersions().firstOrNull { it.active }?.id ?: 0}",
             )
             // Single-flight guard shared with the evolution cycle; skipped whenever a turn is in flight.
             // The state check is only a cheap pre-check: the engine lock is what keeps a save out of a decode
@@ -480,10 +480,7 @@ class JarvisService : Service() {
                 if (!jniEngine.isLoaded || _state.value != AssistantState.IDLE) return false
                 if (!evolutionRunning.compareAndSet(false, true)) return false
                 return try {
-                    // The key names the conversation adapter. If the last turn ran another domain's adapter the
-                    // cache was built under it, so skip rather than save it under the wrong key.
-                    _activeExpert.value == expertRouter.activeExpertSummary(ExpertDomain.CONVERSATION) &&
-                        _state.value == AssistantState.IDLE &&
+                    _state.value == AssistantState.IDLE &&
                         runCatching { kvManager.save(jniEngine, kvKey()) }.getOrDefault(false)
                 } finally {
                     evolutionRunning.set(false)
@@ -735,10 +732,10 @@ class JarvisService : Service() {
                         isInterrupted = { _state.value != AssistantState.IDLE },
                     )
                     applyModelVersionToRouter(mind.listModelVersions().firstOrNull { it.active })
-                    onVersionChanged()
                     if (activeLlm.isLoaded && _state.value == AssistantState.IDLE) {
                         runCatching { expertRouter.selectAndActivate("", activeLlm) }
                     }
+                    onVersionChanged()
                     android.util.Log.i(
                         "JarvisMind",
                         "Evolution cycle finished (manual=$manual, attempted=${res.attempted}, adopted=${res.adopted}): ${res.reason}",
@@ -797,10 +794,10 @@ class JarvisService : Service() {
                         val ok = mind.activateModelVersion(id)
                         val active = mind.listModelVersions().firstOrNull { it.active }
                         applyModelVersionToRouter(active)
-                        onVersionChanged()
                         if (activeLlm != null && activeLlm.isLoaded && _state.value == AssistantState.IDLE) {
                             runCatching { expertRouter.selectAndActivate("", activeLlm) }
                         }
+                        onVersionChanged()
                         statusNotice = if (ok && active != null) {
                             "Activated brain v${active.id} (${active.adapterPath?.let { File(it).name } ?: "base"})"
                         } else {

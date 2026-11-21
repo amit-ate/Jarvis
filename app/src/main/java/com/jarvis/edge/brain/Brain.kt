@@ -88,6 +88,7 @@ class Brain(
         val healthLevel = healthGuard?.level() ?: HealthGuard.Level.NORMAL
         if (healthLevel == HealthGuard.Level.HOT) {
             onSentence(OVERHEATING_MSG)
+            onEpisodeComplete(userText, OVERHEATING_MSG, null, false)
             return
         }
 
@@ -95,6 +96,7 @@ class Brain(
         if (engine == null || !engine.isLoaded) {
             log("no LLM loaded (engine=${engine != null})")
             onSentence(NO_MODEL_MSG)
+            onEpisodeComplete(userText, NO_MODEL_MSG, null, false)
             return
         }
 

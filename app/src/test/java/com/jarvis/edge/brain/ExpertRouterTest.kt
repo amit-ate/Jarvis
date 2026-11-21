@@ -242,4 +242,29 @@ class ExpertRouterTest {
             1e-5f,
         )
     }
+
+    @Test
+    fun `appliedSignature follows what was applied to the engine and returns to default after empty select`(@TempDir tempDir: Path) {
+        val dir = tempDir.toFile()
+        ControlVectorCodec.write(
+            File(dir, "tool_expert.jvec"),
+            ControlVector(2, 3, 1, 2, floatArrayOf(1f, 0f, 0f, 1f, 0f, 0f)),
+        )
+        File(dir, "experts.json").writeText(
+            """
+            {"version":1,"experts":[{"domain":"TOOL_USE","cvec_path":"tool_expert.jvec","cvec_scale":0.4,
+            "cvec_layer_start":1,"cvec_layer_end":2,"keywords":["flashlight"]}]}
+            """.trimIndent(),
+        )
+        val router = ExpertRouter.fromManifestFile(File(dir, "experts.json"), dir)
+        val engine = TrackingLlmEngine()
+
+        router.selectAndActivate("", engine)
+        val defaultSig = router.appliedSignature(engine)
+        router.selectAndActivate("Turn on the flashlight", engine)
+        val toolSig = router.appliedSignature(engine)
+        assertTrue(defaultSig != toolSig)
+        router.selectAndActivate("", engine)
+        assertEquals(defaultSig, router.appliedSignature(engine))
+    }
 }

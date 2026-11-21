@@ -211,6 +211,21 @@ class BrainTest {
     }
 
     @Test
+    fun `no-model early return still completes the episode`() = runBlocking {
+        val tools = listOf(simpleTimeTool())
+        val completed = mutableListOf<String>()
+        val brain = Brain(
+            fast = FastIntents,
+            llm = null,
+            prompts = PromptBuilder(tools),
+            tools = ToolRegistry(tools),
+            onEpisodeComplete = { _, reply, _, echoed -> completed.add("$reply|$echoed") },
+        )
+        brain.respond("why is the ocean salty") { }
+        assertEquals(listOf("My language model isn't loaded, so I can only handle basic commands.|false"), completed)
+    }
+
+    @Test
     fun `brain works with no model loaded`() = runBlocking {
         val tools = listOf(simpleTimeTool())
         val brain = Brain(
