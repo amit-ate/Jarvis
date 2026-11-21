@@ -137,6 +137,7 @@ class JarvisService : Service() {
     private var wakeWord: SherpaWakeWord? = null
     private var liveTranscriber: SherpaLiveTranscriber? = null
     private var accurateTranscriber: Transcriber? = null
+    @Volatile private var personalSpeech: com.jarvis.edge.core.PersonalSpeechModel? = null
     private var llmEngine: LlmEngine? = null
     private var embeddingEngine: EmbeddingEngine? = null
     private var mindStore: SqliteMindStore? = null
@@ -554,6 +555,16 @@ class JarvisService : Service() {
             // spill of that smart-cast compiled to a Void cast and crashed the service ~10 min after every start.
             val llmAvailable = missingLlm.isEmpty()
             val activeLlm: LlamaJniEngine? = if (llmAvailable) jniEngine else null
+            // Learns this user's words and the recogniser's mistakes on the phone, and fixes transcripts with them.
+            val psm = com.jarvis.edge.core.PersonalSpeechModel(
+                File(filesDir, "personal_speech.json"),
+                runCatching { com.jarvis.edge.core.WordList(assets.open("english_words.txt").use { it.readBytes() }) }
+                    .getOrDefault(com.jarvis.edge.core.WordList.EMPTY),
+            ).also { personalSpeech = it }
+            android.util.Log.i("JarvisVoice", "personal speech model: ${psm.vocabularySize} words, ${psm.confusionCount} confusions")
+            fun learnInBackground(block: (com.jarvis.edge.core.PersonalSpeechModel) -> Unit) {
+                serviceScope.launch(Dispatchers.IO) { runCatching { block(psm); psm.save() } }
+            }
             val brain = Brain(
                 fast = FastIntents,
                 llm = activeLlm,
@@ -571,6 +582,7 @@ class JarvisService : Service() {
                 memoryProvider = { query -> buildMemoryContext(mind, embedFn(query)) },
                 personalFacts = PersonalFacts(mind, embedFn),
                 onEntityCorrected = { heard, meant ->
+                    learnInBackground { it.learnCorrection(heard, meant) }
                     runCatching {
                         mind.learnCorrection(heard, meant)
                         mind.learnVocab(meant, source = "corrected")
@@ -692,6 +704,7 @@ class JarvisService : Service() {
                     }.getOrNull()
                 },
                 onUtterance = { samples, text ->
+                    learnInBackground { it.learnText(text) }
                     if (saveVoiceSamplesEnabled(this@JarvisService)) {
                         launch(Dispatchers.IO) {
                             voiceSamples().save(samples, text, VoiceSampleStore.SOURCE_TURN)
@@ -705,6 +718,7 @@ class JarvisService : Service() {
                     }
                 },
                 onCorrectionConfirmed = { heard, meant ->
+                    learnInBackground { it.learnCorrection(heard, meant) }
                     mind.learnCorrection(heard, meant)
                     mind.learnVocab(meant, source = "confirmed")
                     if (regenerateHotwords(mind, hotwordsWriter, hotwordsFile) > 0) {
@@ -715,7 +729,33 @@ class JarvisService : Service() {
                 onSpeechActivity = {
                     lastInteractionMs = System.currentTimeMillis()
                 },
+                textFixer = { text ->
+                    val fix = psm.correct(text)
+                    if (fix.changes.isNotEmpty()) {
+                        android.util.Log.i("JarvisVoice", "personal fix: \"$text\" -> \"${fix.text}\" ${fix.changes}")
+                    }
+                    fix.text
+                },
             )
+
+            // One-time: learn from read-aloud recordings made before the personal model existed.
+            val psmBackfilled = File(filesDir, "personal_speech.backfilled")
+            if (!psmBackfilled.exists() && accurate != null) {
+                serviceScope.launch(Dispatchers.IO) {
+                    delay(20_000)
+                    var n = 0
+                    for (s in voiceSamples().list().filter { it.source == VoiceSampleStore.SOURCE_ENROLL }) {
+                        while (_state.value != AssistantState.IDLE) delay(500)
+                        val audio = runCatching { VoiceSampleStore.readWav(File(voiceSamples().dir, s.wav)) }.getOrNull() ?: continue
+                        val heard = runCatching { accurate.transcribe(audio) }.getOrNull() ?: continue
+                        psm.learnPair(heard, s.text)
+                        n++
+                    }
+                    psm.save()
+                    runCatching { psmBackfilled.writeText("$n\n") }
+                    android.util.Log.i("JarvisVoice", "personal speech model learned from $n recordings: ${psm.vocabularySize} words, ${psm.confusionCount} confusions")
+                }
+            }
 
             val textMutex = kotlinx.coroutines.sync.Mutex()
             textInputHandler = { text, speak ->
@@ -727,6 +767,7 @@ class JarvisService : Service() {
                         try {
                             android.util.Log.i("JarvisTurn", "TYPED: \"$text\"")
                             chatLog(this@JarvisService).addUser(text, typed = true)
+                            learnInBackground { it.learnText(text) }
                             _transcript.value = text
                             lastInteractionMs = System.currentTimeMillis()
                             updateState(AssistantState.THINKING)
@@ -1140,6 +1181,10 @@ class JarvisService : Service() {
                                     voiceSamples().save(it, enrollText, VoiceSampleStore.SOURCE_ENROLL)
                                 }
                                 android.util.Log.i("JarvisVoice", "ENROLL ${saved?.wav ?: "no speech"}: $enrollText")
+                                if (audio != null && saved != null && accurate != null) {
+                                    val heardEnroll = runCatching { accurate.transcribe(audio) }.getOrNull()
+                                    if (heardEnroll != null) learnInBackground { it.learnPair(heardEnroll, enrollText) }
+                                }
                                 publishEnrollResult(enrollText, saved != null)
                             } finally {
                                 updateState(AssistantState.IDLE)

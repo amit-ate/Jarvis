@@ -192,6 +192,25 @@ class TurnControllerTest {
     }
 
     @Test
+    fun `the personal fixer rewrites what was heard before it is answered`() = runBlocking {
+        val heard = mutableListOf<String>()
+        val tc = TurnController(
+            segmenter = SpeechSegmenter(ScriptedVad(2), trailingSilenceMs = 64, shortTrailingSilenceMs = 32),
+            live = FakeLive("cancel all my tymers"),
+            accurate = object : Transcriber {
+                override fun transcribe(samples: FloatArray) = "cancel all my tymers"
+            },
+            brain = dummyBrain("SAY: Done."),
+            speaker = FakeSpeaker(),
+            setState = {},
+            onTranscript = { heard.add(it) },
+            textFixer = { it.replace("tymers", "timers") },
+        )
+        tc.runTurn(dummyFrames())
+        assertEquals(listOf("cancel all my timers"), heard)
+    }
+
+    @Test
     fun `NoSpeech returns to idle silently`() = runBlocking {
         val speaker = FakeSpeaker()
         val states = mutableListOf<AssistantState>()

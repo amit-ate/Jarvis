@@ -32,6 +32,8 @@ class TurnController(
     private val onRespondInterrupted: (spokenSoFar: String) -> Unit = {},
     /** The recorded request and the words chosen for it, for keeping voice samples (not called for blank turns). */
     private val onUtterance: (samples: FloatArray, transcript: String) -> Unit = { _, _ -> },
+    /** Personal fixes learned on the phone (PersonalSpeechModel): what the user most likely said. */
+    private val textFixer: (String) -> String = { it },
 ) {
     private val spokenSoFar = StringBuilder()
 
@@ -159,7 +161,7 @@ class TurnController(
             var heardConfidence = 1f
 
             if (FastIntents.isClosedCommand(finalLive) || accurate == null || (preferStreaming && finalLive.length >= 3)) {
-                transcript = arbiter.applyCorrections(finalLive, corrections).trim()
+                transcript = textFixer(arbiter.applyCorrections(finalLive, corrections).trim())
             } else {
                 accurateRaw = WakeRemnant.clean(accurate.transcribe(samples))
                 val arb = arbiter.arbitrate(
@@ -170,7 +172,7 @@ class TurnController(
                 )
                 liveRaw = arb.liveRaw
                 accurateRaw = arb.accurateRaw
-                transcript = arb.chosen.trim()
+                transcript = textFixer(arb.chosen.trim())
                 // The streaming model is much weaker than the accurate one, so its disagreement is weak evidence:
                 // only a missing accurate transcript makes the words really doubtful.
                 heardConfidence = when {

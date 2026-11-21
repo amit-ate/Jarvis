@@ -1,0 +1,2 @@
+english_words.txt: lowercase words from web2 (Webster's Second International Dictionary, 1934, public domain), as
+shipped in BSD/macOS /usr/share/dict/web2. Used by PersonalSpeechModel to tell English words from misrecognitions.
