@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -82,6 +83,9 @@ struct LlmSession {
   std::mutex mu;
   llama_sampler *cached_grammar = nullptr;
   std::string cached_grammar_str;
+  // Raw-model log-probability of the token most recently emitted to the callback (NaN before the first). Read from
+  // inside the token callback without taking mu, which generate already holds.
+  std::atomic<float> last_logp{NAN};
 };
 
 int64_t now_us() {
@@ -418,6 +422,7 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerateWithSampling(
   session->prev_tokens.resize(common);
 
   const int64_t t_start_us = now_us();
+  session->last_logp.store(NAN);
 
   const int64_t t_prefill_start_us = now_us();
   if (!eval_token_range(session->ctx, prompt_tokens, common, 512)) {
@@ -507,6 +512,17 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeGenerateWithSampling(
     }
     if (llama_vocab_is_eog(vocab, id)) {
       break;
+    }
+
+    // Confidence: probability the unconstrained model gave this token (softmax over the raw logits).
+    if (const float *lg = llama_get_logits_ith(session->ctx, -1)) {
+      float mx = lg[0];
+      for (int32_t i = 1; i < n_vocab; ++i) mx = std::max(mx, lg[i]);
+      float sum = 0.0f;
+      for (int32_t i = 0; i < n_vocab; ++i) sum += std::exp(lg[i] - mx);
+      session->last_logp.store(lg[id] - mx - std::log(sum));
+    } else {
+      session->last_logp.store(NAN);
     }
 
     char piece_buf[256];
@@ -756,6 +772,13 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeApplyControlVector(
   llama_memory_clear(llama_get_memory(session->ctx), true);
   session->prev_tokens.clear();
   return static_cast<jint>(rc);
+}
+
+JNIEXPORT jfloat JNICALL
+Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLastTokenLogProb(JNIEnv *, jobject,
+                                                                 jlong handle) {
+  auto *session = reinterpret_cast<LlmSession *>(handle);
+  return session ? session->last_logp.load() : NAN;
 }
 
 JNIEXPORT jintArray JNICALL

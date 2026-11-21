@@ -24,5 +24,18 @@ class PersonalFacts(
             ?.text?.substring(prefix.length)?.trim()?.ifEmpty { null }
     }
 
+    override fun rememberStatement(statement: String) {
+        val text = statement.trim().trimEnd('.')
+        if (text.isEmpty()) return
+        forgetStatement(text)
+        store.learnFact(text, embed(text), sourceEpisodeId = null, confidence = 0.9f)
+    }
+
+    override fun forgetStatement(statement: String) {
+        val text = statement.trim().trimEnd('.')
+        store.listActiveFacts(500).filter { it.text.trim().trimEnd('.').equals(text, ignoreCase = true) }
+            .forEach { store.deleteFact(it.id) }
+    }
+
     private fun prefixFor(attribute: String) = "User's ${attribute.lowercase().trim()} is "
 }

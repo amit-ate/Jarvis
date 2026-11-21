@@ -65,6 +65,9 @@ interface LlmEngine {
 
     fun unload()
     val isLoaded: Boolean
+
+    /** Log-probability the model gave the token just passed to onToken (NaN when unknown). Read it inside onToken. */
+    val lastTokenLogProb: Float get() = Float.NaN
 }
 
 fun interface TokenCallback {
@@ -82,6 +85,9 @@ class LlamaJniEngine : LlmEngine {
 
     override val isLoaded: Boolean
         get() = handle != 0L
+
+    override val lastTokenLogProb: Float
+        get() = handle.let { if (it == 0L) Float.NaN else nativeLastTokenLogProb(it) }
 
     override fun load(modelFile: File, contextTokens: Int) {
         lock.withLock {
@@ -267,6 +273,7 @@ class LlamaJniEngine : LlmEngine {
     }
 
     private external fun nativeLoad(modelPath: String, contextTokens: Int): Long
+    private external fun nativeLastTokenLogProb(handle: Long): Float
     private external fun nativeGenerate(
         handle: Long,
         prompt: String,

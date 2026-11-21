@@ -26,7 +26,15 @@ class Brain(
     private val memoryProvider: (String) -> String? = { null },
     private val personalFacts: PersonalFactStore? = null,
     private val onEpisodeComplete: (userText: String, reply: String, toolCall: ToolCall?, echoed: Boolean) -> Unit = { _, _, _, _ -> },
+    /** The user corrected a misheard name ("It is Rahul Gandhi"): learn it so the recogniser gets it right next time. */
+    private val onEntityCorrected: (heard: String, meant: String) -> Unit = { _, _ -> },
 ) {
+    /** Last thing the user said (whether or not it went into history), so a follow-up correction can refer to it. */
+    @Volatile
+    private var lastUserUtterance: String? = null
+
+    @Volatile
+    private var lastTaughtFact: TaughtFact? = null
     private val history = ArrayList<Turn>()
     private var lastTurnMillis: Long = 0L
     private val historyLock = Any()
@@ -46,15 +54,58 @@ class Brain(
         val raw: String,
         val spokeAnything: Boolean,
         val abortedForEcho: Boolean,
+        /** The first sentence was a low-confidence answer to a factual question and was not spoken. */
+        val abortedUnsure: Boolean = false,
+        /** A later sentence was dropped (repeat or low confidence); [spokenText] is what was actually said. */
+        val truncated: Boolean = false,
+        val spokenText: String = "",
+        /** Confidence over every sentence the model produced, spoken or not. */
+        val confidence: Confidence = Confidence.NONE,
     )
 
-    suspend fun respond(userText: String, onSentence: suspend (String) -> Unit) {
+    private enum class Gate { SPEAK, REJECT, UNSURE, TRUNCATE }
+
+    /**
+     * Answers [userText]. [heardConfidence] (0..1) is how sure speech recognition was of the words; it decides
+     * whether an unsure answer asks the user to repeat or says it does not know.
+     */
+    suspend fun respond(userText: String, heardConfidence: Float = 1f, onSentence: suspend (String) -> Unit) =
+        respondTurn(userText, heardConfidence, allowFix = true, onSentence = onSentence)
+
+    private suspend fun respondTurn(
+        userText: String,
+        heardConfidence: Float,
+        allowFix: Boolean,
+        onSentence: suspend (String) -> Unit,
+    ) {
         val now = clockMillis()
         synchronized(historyLock) {
             if (lastTurnMillis != 0L && now - lastTurnMillis > HISTORY_IDLE_RESET_MS) {
                 history.clear()
             }
         }
+
+        // Following the conversation: "It is Rahul Gandhi" right after a question with a misheard name re-answers that
+        // question with the name fixed, and teaches the recogniser the correction.
+        val previous = lastUserUtterance
+        if (allowFix) {
+            val fix = ConversationFollow.entityFix(userText, previous)
+            if (fix != null) {
+                log("entity fix: \"${fix.heard}\" -> \"${fix.meant}\"; re-answering \"${fix.correctedText}\"")
+                runCatching { onEntityCorrected(fix.heard, fix.meant) }
+                lastTaughtFact?.let { tf ->
+                    if (tf.statement().contains(fix.heard, ignoreCase = true)) {
+                        runCatching { personalFacts?.forgetStatement(tf.statement()) }
+                    }
+                }
+                lastTaughtFact = null
+                dropLastTurnFor(previous)
+                onSentence("Got it, ${fix.meant}.")
+                respondTurn(fix.correctedText, 1f, allowFix = false, onSentence = onSentence)
+                return
+            }
+        }
+        lastUserUtterance = userText
 
         // Fast path / learned shortcut is checked first so basic commands work even without a loaded LLM or while HOT.
         val engineReady = llm?.isLoaded == true && healthGuard?.level() != HealthGuard.Level.HOT
@@ -124,6 +175,18 @@ class Brain(
             onEpisodeComplete(userText, reply, null, false)
             return
         }
+        val taught = if (personalFacts == null) null else ConversationFollow.taughtFact(userText)
+        if (taught != null) {
+            val statement = taught.statement()
+            val reply = runCatching { personalFacts!!.rememberStatement(statement) }
+                .fold({ "Thanks, I'll remember that $statement." }, { "Sorry, I couldn't save that." })
+            lastTaughtFact = taught
+            log("taught fact: $statement")
+            onSentence(reply)
+            recordTurn(userText, "SAY: $reply")
+            onEpisodeComplete(userText, reply, null, false)
+            return
+        }
         val askedAttr = if (aboutDevice) null else PersonalQuery.askedAttribute(userText)
         if (askedAttr != null) {
             val known = personalFacts?.let { runCatching { it.recall(askedAttr) }.getOrNull() }
@@ -136,8 +199,19 @@ class Brain(
         }
         val sampling = expertRouter?.selectAndActivate(userText, engine) ?: SamplingConfig()
         val turns = activeHistory()
-        // Echo of the user, or a repeat of an earlier reply, is never spoken on the first sentence.
-        val rejectFirst: (String) -> Boolean = { s -> EchoGuard.isEcho(userText, s) || repeatsHistory(s, turns) }
+        // Every sentence is checked before it is spoken: an echo of the user or a repeat of an earlier reply is
+        // rejected; for a factual question, a low-confidence first sentence (a guess) is replaced by an honest
+        // "not sure", and a low-confidence later sentence ends the reply.
+        val factual = EchoGuard.looksLikeFactualQuestion(userText)
+        val gate: (Int, String, Confidence) -> Gate = { i, s, c ->
+            val repeat = repeatsHistory(s, turns)
+            when {
+                i == 0 && (repeat || EchoGuard.isEcho(userText, s)) -> Gate.REJECT
+                i == 0 && factual && c.isUncertain() -> Gate.UNSURE
+                i > 0 && (repeat || (factual && c.isUncertain()) || c.score < VERY_UNSURE_SCORE) -> Gate.TRUNCATE
+                else -> Gate.SPEAK
+            }
+        }
         val promptText = prompts.prompt(
             history = turns,
             user = userText,
@@ -152,15 +226,38 @@ class Brain(
             grammar = prompts.grammar(),
             maxTokens = maxTokens,
             sampling = sampling,
-            rejectFirstSentence = rejectFirst,
+            gate = gate,
             onSentence = onSentence,
         )
 
         val parsed = parseModelOutput(firstRun.raw)
         log("llm raw (${clockMillis() - t0} ms, maxTokens=$maxTokens): \"${firstRun.raw.take(300)}\" -> $parsed")
+        log(
+            "confidence: heard=${"%.2f".format(java.util.Locale.US, heardConfidence)} answer=${firstRun.confidence.describe()} " +
+                "factual=$factual -> " + when {
+                    firstRun.abortedUnsure -> "withheld (unsure)"
+                    firstRun.abortedForEcho -> "rejected (echo/repeat)"
+                    firstRun.truncated -> "truncated"
+                    else -> "spoken"
+                },
+        )
+        if (firstRun.abortedUnsure) {
+            val msg = unsureReply(heardConfidence, offline = offlineNudge != null)
+            onSentence(msg)
+            recordTurn(userText, "SAY: $msg")
+            onEpisodeComplete(userText, msg, null, false)
+            return
+        }
         when (parsed) {
             is ModelOutput.Say -> {
-                val replyText = parsed.text
+                val replyText = if (firstRun.truncated) firstRun.spokenText else parsed.text
+                if (firstRun.spokeAnything) {
+                    // Already said out loud: a retry would only talk over it. Keep what was spoken.
+                    val echoed = EchoGuard.isEcho(userText, replyText) || repeatsHistory(replyText, turns)
+                    if (!echoed) recordTurn(userText, "SAY: $replyText")
+                    onEpisodeComplete(userText, replyText, null, echoed)
+                    return
+                }
                 val repeats = repeatsHistory(replyText, turns)
                 val echoed = firstRun.abortedForEcho || replyText.isBlank() || EchoGuard.isEcho(userText, replyText) || repeats
                 if (!echoed) {
@@ -185,11 +282,18 @@ class Brain(
                         grammar = prompts.sayOnlyGrammar(),
                         maxTokens = maxTokens,
                         sampling = RETRY_SAMPLING,
-                        rejectFirstSentence = rejectFirst,
-                        onSentence = if (firstRun.spokeAnything) ({}) else onSentence,
+                        gate = gate,
+                        onSentence = onSentence,
                     )
+                    if (retryRun.abortedUnsure) {
+                        val msg = unsureReply(heardConfidence, offline = offlineNudge != null)
+                        onSentence(msg)
+                        recordTurn(userText, "SAY: $msg")
+                        onEpisodeComplete(userText, msg, null, false)
+                        return
+                    }
                     val retryParsed = parseModelOutput(retryRun.raw)
-                    val retryText = (retryParsed as? ModelOutput.Say)?.text.orEmpty()
+                    val retryText = if (retryRun.truncated) retryRun.spokenText else (retryParsed as? ModelOutput.Say)?.text.orEmpty()
                     if (!retryRun.abortedForEcho && retryText.isNotBlank() &&
                         !EchoGuard.isEcho(userText, retryText) && !repeatsHistory(retryText, turns)
                     ) {
@@ -262,7 +366,7 @@ class Brain(
             grammar = grammar,
             maxTokens = maxTokens,
             sampling = sampling,
-            rejectFirstSentence = null,
+            gate = null,
             onSentence = onSentence,
         )
         return when (val out = parseModelOutput(collected.raw)) {
@@ -287,12 +391,28 @@ class Brain(
         grammar: String?,
         maxTokens: Int,
         sampling: SamplingConfig,
-        rejectFirstSentence: ((String) -> Boolean)?,
+        gate: ((index: Int, sentence: String, confidence: Confidence) -> Gate)?,
         onSentence: suspend (String) -> Unit,
     ): StreamResult = coroutineScope {
         val raw = StringBuilder()
         val splitter = SentenceSplitter(splitClauses = true)
-        val sentences = Channel<String>(Channel.UNLIMITED)
+        val sentences = Channel<Pair<String, Confidence>>(Channel.UNLIMITED)
+        // Producer-thread only: token log-probs since the last emitted sentence.
+        val meter = ConfidenceMeter()
+        // The current token counts toward the sentence it completes; otherwise it starts the next sentence.
+        var currentLp = Float.NaN
+        var currentCounted = true
+        fun emit(s: String) {
+            if (!currentCounted && raw.toString().trimEnd().endsWith(s.trimEnd())) {
+                meter.add(currentLp)
+                currentCounted = true
+            }
+            sentences.trySend(s to meter.takeAndReset())
+        }
+        fun settleCurrent() {
+            if (!currentCounted) meter.add(currentLp)
+            currentCounted = true
+        }
 
         val cancelledByConsumer = AtomicBoolean(false)
 
@@ -302,7 +422,10 @@ class Brain(
             try {
                 engine.generate(prompt, grammar, maxTokens, sampling) { piece ->
                     if (cancelledByConsumer.get()) return@generate false
+                    settleCurrent()
                     raw.append(piece)
+                    currentLp = engine.lastTokenLogProb
+                    currentCounted = false
 
                     if (mode == StreamMode.TOOL) {
                         return@generate !cancelledByConsumer.get()
@@ -322,7 +445,7 @@ class Brain(
                                 val afterPrefix = raw.substring(colonIdx + 1).trimStart()
                                 if (afterPrefix.isNotEmpty()) {
                                     for (s in splitter.push(afterPrefix)) {
-                                        sentences.trySend(s)
+                                        emit(s)
                                     }
                                 }
                                 return@generate !cancelledByConsumer.get()
@@ -332,14 +455,14 @@ class Brain(
                                 mode = StreamMode.SAY
                                 prefixSkipped = true
                                 for (s in splitter.push(raw.toString())) {
-                                    sentences.trySend(s)
+                                    emit(s)
                                 }
                                 return@generate !cancelledByConsumer.get()
                             }
                         }
                     } else if (mode == StreamMode.SAY && prefixSkipped) {
                         for (s in splitter.push(piece)) {
-                            sentences.trySend(s)
+                            emit(s)
                         }
                     }
                     !cancelledByConsumer.get()
@@ -355,34 +478,45 @@ class Brain(
                         }
                         if (text.isNotEmpty()) {
                             for (s in splitter.push(text)) {
-                                sentences.trySend(s)
+                                emit(s)
                             }
                         }
                         mode = StreamMode.SAY
                     }
                 }
                 if (!cancelledByConsumer.get() && mode == StreamMode.SAY) {
-                    splitter.flush()?.let { rem -> sentences.trySend(rem) }
+                    settleCurrent()
+                    splitter.flush()?.let { rem -> emit(rem) }
                 }
             } finally {
                 sentences.close()
             }
         }
 
-        var firstChecked = false
+        var index = 0
         var spokeAnything = false
         var abortedForEcho = false
+        var abortedUnsure = false
+        var truncated = false
+        val spoken = ArrayList<String>()
+        val seen = ArrayList<Confidence>()
         try {
-            for (sentence in sentences) {
-                if (!firstChecked) {
-                    firstChecked = true
-                    if (rejectFirstSentence != null && rejectFirstSentence(sentence)) {
-                        abortedForEcho = true
-                        cancelledByConsumer.set(true)
-                        break
+            for ((sentence, conf) in sentences) {
+                seen.add(conf)
+                val decision = gate?.invoke(index, sentence, conf) ?: Gate.SPEAK
+                index++
+                if (decision != Gate.SPEAK) {
+                    when (decision) {
+                        Gate.REJECT -> abortedForEcho = true
+                        Gate.UNSURE -> abortedUnsure = true
+                        else -> truncated = true
                     }
+                    log("sentence ${index - 1} ${decision.name.lowercase()}: \"${sentence.take(80)}\" (${conf.describe()})")
+                    cancelledByConsumer.set(true)
+                    break
                 }
                 spokeAnything = true
+                spoken.add(sentence)
                 onSentence(sentence)
             }
         } catch (ce: CancellationException) {
@@ -399,6 +533,10 @@ class Brain(
             raw = raw.toString(),
             spokeAnything = spokeAnything,
             abortedForEcho = abortedForEcho,
+            abortedUnsure = abortedUnsure,
+            truncated = truncated,
+            spokenText = spoken.joinToString(" "),
+            confidence = combine(seen),
         )
     }
 
@@ -421,6 +559,20 @@ class Brain(
     private fun stripSayPrefix(text: String): String {
         val trimmed = text.trimStart()
         return if (trimmed.startsWith("SAY:", ignoreCase = true)) trimmed.substring(4).trimStart() else trimmed
+    }
+
+    private fun unsureReply(heardConfidence: Float, offline: Boolean): String = when {
+        heardConfidence < HEARD_UNSURE -> "I'm not sure I heard that right. Could you say it again?"
+        offline -> "I'm not sure about that, and I can't look it up without internet."
+        else -> "I'm not sure about that."
+    }
+
+    /** Removes the newest history turn if it belongs to [userText] (it is being replaced by a corrected version). */
+    private fun dropLastTurnFor(userText: String?) {
+        if (userText == null) return
+        synchronized(historyLock) {
+            if (history.isNotEmpty() && history.last().user == userText) history.removeAt(history.size - 1)
+        }
     }
 
     private fun replyMaxTokens(): Int =
@@ -455,6 +607,10 @@ class Brain(
         const val NO_MODEL_MSG = "My language model isn't loaded, so I can only handle basic commands."
         const val OVERHEATING_MSG = "I'm overheating, so I'll keep to basic commands."
         const val ECHO_FALLBACK_MSG = "I'm not sure how to answer that yet."
+        /** Below this, speech recognition probably got words wrong: ask the user to repeat rather than say "not sure". */
+        private const val HEARD_UNSURE = 0.5f
+        /** A later sentence this unsure is cut even in chat (the model is rambling). */
+        private const val VERY_UNSURE_SCORE = 0.35f
         private const val ANTI_ECHO_NUDGE = "Do NOT repeat the user's words. Answer directly."
         private const val OFFLINE_NUDGE = "No internet. Answer from your own knowledge in one sentence; if unsure, say you are not sure."
         private val RETRY_SAMPLING = SamplingConfig(

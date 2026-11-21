@@ -127,6 +127,8 @@ class TurnController(
             var liveRaw = finalLive
             var accurateRaw = ""
             val transcript: String
+            // How sure recognition is of the words: the two recognisers agreeing is the only evidence we have.
+            var heardConfidence = 1f
 
             if (FastIntents.isClosedCommand(finalLive) || accurate == null || (preferStreaming && finalLive.length >= 3)) {
                 transcript = arbiter.applyCorrections(finalLive, corrections).trim()
@@ -141,6 +143,10 @@ class TurnController(
                 liveRaw = arb.liveRaw
                 accurateRaw = arb.accurateRaw
                 transcript = arb.chosen.trim()
+                heardConfidence = when {
+                    arb.accurateRaw.isBlank() -> 0.4f // only the weaker streaming guess
+                    else -> (1f - arb.wordErrorRate).coerceIn(0f, 1f)
+                }
 
                 if (arb.needsConfirmation && transcript.length >= 2) {
                     onTranscript(transcript)
@@ -167,7 +173,7 @@ class TurnController(
                 return
             }
 
-            speakBrainResponse(transcript)
+            speakBrainResponse(transcript, heardConfidence)
         } catch (_: StopSpeakingSignal) {
             onRespondInterrupted(spokenSoFar.toString())
             // Stop speaking mid-response cleanly and return to IDLE.
@@ -176,11 +182,11 @@ class TurnController(
         }
     }
 
-    private suspend fun speakBrainResponse(transcript: String) {
+    private suspend fun speakBrainResponse(transcript: String, heardConfidence: Float = 1f) {
         var speakingStarted = false
         spokenSoFar.setLength(0)
         onRespondStart(transcript)
-        brain.respond(transcript) { sentence ->
+        brain.respond(transcript, heardConfidence) { sentence ->
             if (speaker.isStopped) {
                 throw StopSpeakingSignal()
             }

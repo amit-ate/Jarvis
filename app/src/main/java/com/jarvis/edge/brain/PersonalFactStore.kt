@@ -4,4 +4,10 @@ package com.jarvis.edge.brain
 interface PersonalFactStore {
     fun remember(attribute: String, value: String)
     fun recall(attribute: String): String?
+
+    /** A fact the user taught about the world ("Rahul Gandhi's sister is Priyanka"); recalled through memory search. */
+    fun rememberStatement(statement: String) {}
+
+    /** Removes a taught statement, e.g. after the user said a name in it was misheard. */
+    fun forgetStatement(statement: String) {}
 }

@@ -13,8 +13,12 @@ import java.io.File
 class BrainTest {
 
     private class FakeLlm(
+        /** Log-probability reported for each emitted piece (NaN = unknown, the default). */
+        private val logProbFor: (String) -> Float = { Float.NaN },
         private val responder: (callIdx: Int, prompt: String, sampling: SamplingConfig, onToken: (String) -> Boolean) -> Unit,
     ) : LlmEngine {
+        private var currentLp = Float.NaN
+        override val lastTokenLogProb: Float get() = currentLp
         override var isLoaded: Boolean = true
         var calls: Int = 0
         val prompts = mutableListOf<String>()
@@ -41,7 +45,7 @@ class BrainTest {
             val idx = calls++
             prompts.add(prompt)
             samplings.add(sampling)
-            responder(idx, prompt, sampling, onToken)
+            responder(idx, prompt, sampling) { piece -> currentLp = logProbFor(piece); onToken(piece) }
             return GenStats(promptTokens = 50, cachedTokens = 40, outputTokens = 10, firstTokenMs = 100, tokensPerSecond = 15f)
         }
 
@@ -535,5 +539,100 @@ class BrainTest {
         brain.respond("tell me a joke") { }
         assertEquals(1, fakeLlm.calls)
         assertFalse(fakeLlm.prompts[0].contains("Got it, your age is 41"))
+    }
+
+    private class StatementFacts : PersonalFactStore {
+        val statements = mutableListOf<String>()
+        override fun remember(attribute: String, value: String) {}
+        override fun recall(attribute: String): String? = null
+        override fun rememberStatement(statement: String) { statements.add(statement) }
+        override fun forgetStatement(statement: String) { statements.remove(statement) }
+    }
+
+    private fun lp(p: Double) = kotlin.math.ln(p).toFloat()
+
+    @Test
+    fun `low-confidence answer to a factual question is withheld`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { if (it.contains("Jazmin")) lp(0.004) else lp(0.9) }) { _, _, _, onToken ->
+            onToken("SAY: Raul's sister is ")
+            onToken("Jazmin.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("Who is Raul Garnish sister?") { out.add(it) }
+        assertEquals(1, out.size)
+        assertTrue(out[0].startsWith("I'm not sure about that"), out[0])
+    }
+
+    @Test
+    fun `unsure answer after unsure hearing asks the user to repeat`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.01) }) { _, _, _, onToken ->
+            onToken("SAY: Her name")
+            onToken(" is Jazmin.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("Who is Raul Garnish sister?", heardConfidence = 0.3f) { out.add(it) }
+        assertEquals(listOf("I'm not sure I heard that right. Could you say it again?"), out)
+    }
+
+    @Test
+    fun `confident answer to a factual question is spoken`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { lp(0.9) }) { _, _, _, onToken ->
+            onToken("SAY: Shakespeare wrote ")
+            onToken("it.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("Who wrote Hamlet?") { out.add(it) }
+        assertEquals("Shakespeare wrote it.", out.joinToString(" "))
+    }
+
+    @Test
+    fun `rambling low-confidence later sentence is cut`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { if (it.contains("Zork")) lp(0.01) else lp(0.9) }) { _, _, _, onToken ->
+            onToken("SAY: Sure thing.")
+            onToken(" Zork")
+            onToken(" qux blorp.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("tell me a joke") { out.add(it) }
+        assertEquals(listOf("Sure thing."), out)
+    }
+
+    @Test
+    fun `a fact the user teaches is remembered without the model`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Yes, that's right.") }
+        val facts = StatementFacts()
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools), personalFacts = facts)
+        val out = mutableListOf<String>()
+        brain.respond("As I know, Rao Ghani's sister name is Priyanka.") { out.add(it) }
+        assertEquals(listOf("Thanks, I'll remember that Rao Ghani's sister is Priyanka."), out)
+        assertEquals(listOf("Rao Ghani's sister is Priyanka"), facts.statements)
+        assertEquals(0, fakeLlm.calls)
+    }
+
+    @Test
+    fun `correcting a misheard name fixes the taught fact and learns the correction`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Okay.") }
+        val facts = StatementFacts()
+        val learned = mutableListOf<Pair<String, String>>()
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(
+            fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools),
+            personalFacts = facts, onEntityCorrected = { h, m -> learned.add(h to m) },
+        )
+        brain.respond("As I know, Rao Ghani's sister name is Priyanka.") { }
+        val out = mutableListOf<String>()
+        brain.respond("It is Rahul Gandhi's.") { out.add(it) }
+        assertEquals(listOf("Rao Ghani" to "Rahul Gandhi"), learned)
+        assertEquals(listOf("Rahul Gandhi's sister is Priyanka"), facts.statements)
+        assertEquals(listOf("Got it, Rahul Gandhi.", "Thanks, I'll remember that Rahul Gandhi's sister is Priyanka."), out)
     }
 }

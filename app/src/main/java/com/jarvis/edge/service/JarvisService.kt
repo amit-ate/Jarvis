@@ -523,6 +523,13 @@ class JarvisService : Service() {
                 selfStateProvider = { SelfModel.toSpokenSummary(selfModel.capture()) },
                 memoryProvider = { query -> buildMemoryContext(mind, embedFn(query)) },
                 personalFacts = PersonalFacts(mind, embedFn),
+                onEntityCorrected = { heard, meant ->
+                    runCatching {
+                        mind.learnCorrection(heard, meant)
+                        mind.learnVocab(meant, source = "corrected")
+                        if (regenerateHotwords(mind, hotwordsWriter, hotwordsFile) > 0) live.updateHotwords(hotwordsFile)
+                    }.onFailure { android.util.Log.w("JarvisBrain", "learning correction failed", it) }
+                },
                 onEpisodeComplete = { userText, reply, toolCall, echoed ->
                     _activeExpert.value = expertRouter.activeExpertSummary(expertRouter.classify(userText))
                     val argsJson = toolCall?.let { JSONObject(it.args).toString() }
@@ -1139,7 +1146,8 @@ class JarvisService : Service() {
 
     private fun buildMemoryContext(mind: SqliteMindStore, queryVec: FloatArray): String? {
         val facts = mind.retrieveRelevantFacts(queryVec, topK = 2, minSim = 0.25f)
-        val ep = mind.retrieveRelevantEpisode(queryVec, minSim = 0.35f)
+        // Only a near-identical earlier question: a loosely related old answer (often a guess) was being re-used as fact.
+        val ep = mind.retrieveRelevantEpisode(queryVec, minSim = 0.80f)
         if (facts.isEmpty() && ep == null) return null
         val parts = ArrayList<String>()
         for (f in facts) {
