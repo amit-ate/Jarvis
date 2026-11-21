@@ -138,16 +138,20 @@ fun HomeHud(
         }
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            // Night mode: everything turns deep red, which is kind to dark-adapted eyes.
-            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-            .drawWithContent {
-                drawContent()
-                if (night) drawRect(Color(0xFFFF2A2A), blendMode = BlendMode.Multiply)
-            },
-    ) {
+    // Night: when the room is dark and Jarvis is idle, show a dim bedside-clock screen instead of the full HUD.
+    // A tap brings the full screen back for 20 seconds; anything Jarvis does brings it back too.
+    var revealUntil by remember { mutableLongStateOf(0L) }
+    var clockNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(revealUntil) {
+        while (System.currentTimeMillis() < revealUntil) { delay(1_000); clockNow = System.currentTimeMillis() }
+        clockNow = System.currentTimeMillis()
+    }
+    val ambient = night && state == AssistantState.IDLE && !booting && alert == null && clockNow >= revealUntil
+    if (ambient) {
+        AmbientNight(clockText = clockText, shift = shift, onTap = { revealUntil = System.currentTimeMillis() + 20_000L })
+        return
+    }
+    Box(Modifier.fillMaxSize()) {
         Canvas(Modifier.fillMaxSize()) { drawHudBackdrop(accent) }
 
         Column(
@@ -167,7 +171,6 @@ fun HomeHud(
                 StatusChip("ON-DEVICE", Jx.Mint)
                 StatusChip(health, if (health.equals("NORMAL", true)) Jx.Cyan else Jx.Amber)
                 if (battery > 0) StatusChip("$battery%", if (battery < 20) Jx.Red else Jx.TextDim, dot = false)
-                if (night) StatusChip("night", Jx.TextDim, dot = false)
             }
 
             AnimatedVisibility(alert != null, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
@@ -267,5 +270,28 @@ private fun DockItem(label: String, kind: GlyphKind, onClick: () -> Unit) {
         RingButton(onClick = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }, size = 48.dp) { Glyph(kind, Jx.Cyan, 22.dp) }
         Spacer(Modifier.height(5.dp))
         HudLabel(label, color = Jx.TextDim, size = 9)
+    }
+}
+
+/** Dim night screen: a softly lit clock and a still, faint reactor on black. */
+@Composable
+private fun AmbientNight(clockText: String, shift: Pair<Int, Int>, onTap: () -> Unit) {
+    val (time, date) = clockText.split('|').let { (it.getOrNull(0) ?: "") to (it.getOrNull(1) ?: "") }
+    val dim = Color(0xFF7E8BA3)
+    Box(
+        Modifier.fillMaxSize().background(Color.Black)
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onTap),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(Modifier.offset(shift.first.dp, shift.second.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.graphicsLayer { alpha = 0.35f }) {
+                JarvisOrb(state = AssistantState.IDLE, micLevel = 0f, size = 120.dp, calm = true)
+            }
+            Spacer(Modifier.height(28.dp))
+            Text(time.substringBefore(' '), style = TextStyle(color = dim, fontSize = 72.sp, fontWeight = FontWeight.Thin, letterSpacing = 2.sp))
+            HudLabel(time.substringAfter(' ', "") + "  ·  " + date, color = dim.copy(alpha = 0.6f), size = 11)
+            Spacer(Modifier.height(36.dp))
+            HudLabel("say \"jarvis\" · tap to wake the screen", color = dim.copy(alpha = 0.35f), size = 9)
+        }
     }
 }
