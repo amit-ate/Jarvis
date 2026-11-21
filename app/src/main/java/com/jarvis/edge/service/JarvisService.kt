@@ -984,6 +984,9 @@ class JarvisService : Service() {
 
             var turnChannel: Channel<FloatArray>? = null
             var turnJob: Job? = null
+            // The last ~320 ms of idle audio. The wake word is only reported once it has been fully decoded, and the
+            // mic is muted during the chime, so without this the user's first word ("what's ...") was cut off.
+            val preRoll = ArrayDeque<FloatArray>()
 
             try {
                 mic.frames().collect { frame ->
@@ -1011,6 +1014,8 @@ class JarvisService : Service() {
                         return@collect
                     }
 
+                    preRoll.addLast(frame)
+                    while (preRoll.size > PRE_ROLL_FRAMES) preRoll.removeFirst()
                     val woken = manualWakeRequested.getAndSet(false) || gatedWake.accept(frame)
                     if (woken) {
                         lastInteractionMs = System.currentTimeMillis()
@@ -1026,6 +1031,8 @@ class JarvisService : Service() {
                         updateState(AssistantState.LISTENING)
                         updateNotification("Jarvis: LISTENING")
                         val ch = Channel<FloatArray>(Channel.UNLIMITED)
+                        for (f in preRoll) ch.trySend(f)
+                        preRoll.clear()
                         turnChannel = ch
                         turnJob = launch {
                             try {
@@ -1209,6 +1216,7 @@ class JarvisService : Service() {
         private const val KV_SAVE_TIMEOUT_MS = 2_000L
         private const val KV_IDLE_SAVE_DELAY_MS = 3_000L
         private const val REFLECTION_IDLE_MS = 10L * 60_000L
+        private const val PRE_ROLL_FRAMES = 10 // 10 x 512 samples @16 kHz = 320 ms
         private val LEARNING_TYPES = setOf("fact", "vocab", "correction", "shortcut")
 
         const val ACTION_STOP_SPEAKING = "com.jarvis.edge.action.STOP_SPEAKING"

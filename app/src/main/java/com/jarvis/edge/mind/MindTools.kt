@@ -213,9 +213,9 @@ class MindStatusTool(
                 if (items.isEmpty()) {
                     ToolResult("I haven't learned anything new in the last 24 hours.", ok = true)
                 } else {
-                    val summary = items.take(3).joinToString("; ") { it.summary }
+                    val summary = items.take(3).joinToString("; ") { spokenFact(it.summary) }
                     ToolResult(
-                        spoken = "In the last 24 hours I learned ${items.size} items, including: $summary.",
+                        spoken = "In the last 24 hours I learned ${countNoun(items.size, "item", "items")}, including: $summary.",
                         ok = true,
                         feedToModel = items.joinToString("\n") { "- ${it.summary}" },
                     )
@@ -226,9 +226,9 @@ class MindStatusTool(
                 if (facts.isEmpty()) {
                     ToolResult("I don't have any personal facts stored yet.", ok = true)
                 } else {
-                    val top = facts.take(3).joinToString("; ") { it.text }
+                    val top = facts.take(3).joinToString("; ") { spokenFact(it.text) }
                     ToolResult(
-                        spoken = "I remember ${facts.size} facts about you, such as: $top.",
+                        spoken = "I remember ${countNoun(facts.size, "fact", "facts")} about you, such as: $top.",
                         ok = true,
                         feedToModel = facts.joinToString("\n") { "- ${it.text}" },
                     )
@@ -268,6 +268,13 @@ class MindStatusTool(
     }
 
     companion object {
+        /** Stored facts say "User's ..."; spoken aloud they should address the user as "your ...". */
+        internal fun spokenFact(text: String): String =
+            if (text.startsWith("User's ")) "your " + text.removePrefix("User's ") else text
+
+        internal fun countNoun(count: Int, singular: String, plural: String): String =
+            if (count == 1) "$count $singular" else "$count $plural"
+
         val ACTIONS = listOf(
             "learned_today",
             "know_about_me",

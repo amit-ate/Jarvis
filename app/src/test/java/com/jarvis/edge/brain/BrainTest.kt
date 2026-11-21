@@ -406,7 +406,9 @@ class BrainTest {
 
     @Test
     fun `phone status is injected only for device questions`() = runBlocking {
-        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Sure.") }
+        val fakeLlm = FakeLlm { idx, _, _, onToken ->
+            onToken(if (idx == 0) "SAY: Sure." else "SAY: Your phone is warm.")
+        }
         val tools = listOf(simpleTimeTool())
         val brain = Brain(
             fast = FastIntents,
@@ -446,5 +448,92 @@ class BrainTest {
         brain.respond("What's my age?") { spoken.add(it) }
         assertEquals("41", facts.map["age"])
         assertEquals(listOf("Got it, your age is 41. I'll remember that.", "Your age is 41."), spoken)
+    }
+
+    @Test
+    fun `fast tool sentence is spoken as is and the model is never called`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, _ -> throw AssertionError("LLM must not be called") }
+        val helloTool = object : Tool {
+            override val name = "hello"
+            override val description = "Hello"
+            override val params: Map<String, List<String>?> = emptyMap()
+            override suspend fun run(args: Map<String, String>) =
+                ToolResult("Hello there.", ok = true, feedToModel = "x")
+        }
+        val tools = listOf(helloTool)
+        val brain = Brain(
+            fast = FastIntents,
+            llm = fakeLlm,
+            prompts = PromptBuilder(tools),
+            tools = ToolRegistry(tools),
+            shortcutMatcher = { text -> if (text == "custom hello") ToolCall("hello", emptyMap()) else null },
+        )
+        val spoken = mutableListOf<String>()
+        brain.respond("custom hello") { spoken.add(it) }
+        assertEquals(listOf("Hello there."), spoken)
+        assertEquals(0, fakeLlm.calls)
+    }
+
+    @Test
+    fun `failed web search is not spoken and the model answers with the no-internet rule`() = runBlocking {
+        val searchTool = object : Tool {
+            override val name = "web_search"
+            override val description = "Search web"
+            override val params = mapOf("query" to null)
+            override suspend fun run(args: Map<String, String>) =
+                ToolResult("Sorry, I couldn't find an online answer for ${args["query"]}.", ok = false)
+        }
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: I believe that is a politician.") }
+        val tools = listOf(simpleTimeTool(), searchTool)
+        val brain = Brain(
+            fast = FastIntents,
+            llm = fakeLlm,
+            prompts = PromptBuilder(tools),
+            tools = ToolRegistry(tools),
+        )
+        val spoken = mutableListOf<String>()
+        brain.respond("who is the president of france") { spoken.add(it) }
+        assertEquals(1, fakeLlm.calls)
+        assertTrue(fakeLlm.prompts[0].contains("No internet."))
+        assertEquals(listOf("I believe that is a politician."), spoken)
+    }
+
+    @Test
+    fun `reply repeating an earlier turn is retried and the new answer is spoken`() = runBlocking {
+        val fakeLlm = FakeLlm { idx, _, _, onToken ->
+            if (idx == 2) onToken("SAY: Something new.") else onToken("SAY: Paris is the capital.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(
+            fast = FastIntents,
+            llm = fakeLlm,
+            prompts = PromptBuilder(tools),
+            tools = ToolRegistry(tools),
+        )
+        val first = mutableListOf<String>()
+        brain.respond("tell me a joke") { first.add(it) }
+        assertEquals(listOf("Paris is the capital."), first)
+
+        val second = mutableListOf<String>()
+        brain.respond("tell me something about dogs") { second.add(it) }
+        assertEquals(listOf("Something new."), second)
+        assertEquals(3, fakeLlm.calls)
+    }
+
+    @Test
+    fun `personal fact reply is not copied into the next model prompt`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Sure.") }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(
+            fast = FastIntents,
+            llm = fakeLlm,
+            prompts = PromptBuilder(tools),
+            tools = ToolRegistry(tools),
+            personalFacts = MapFacts(),
+        )
+        brain.respond("My age is 41.") { }
+        brain.respond("tell me a joke") { }
+        assertEquals(1, fakeLlm.calls)
+        assertFalse(fakeLlm.prompts[0].contains("Got it, your age is 41"))
     }
 }

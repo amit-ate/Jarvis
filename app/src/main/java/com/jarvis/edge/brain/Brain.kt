@@ -57,33 +57,42 @@ class Brain(
         }
 
         // Fast path / learned shortcut is checked first so basic commands work even without a loaded LLM or while HOT.
+        val engineReady = llm?.isLoaded == true && healthGuard?.level() != HealthGuard.Level.HOT
+        var offlineNudge: String? = null
         val fastCall = fast.match(userText) ?: shortcutMatcher?.invoke(userText)
-        fastCall?.let { call ->
-            log("fast intent: $call")
-            val result = tools.run(call)
+        if (fastCall != null) {
+            log("fast intent: $fastCall")
+            val result = tools.run(fastCall)
             log("tool result: spoken=\"${result.spoken}\" feed=${result.feedToModel?.take(120)}")
-            if (result.feedToModel == null || llm == null || !llm.isLoaded || healthGuard?.level() == HealthGuard.Level.HOT) {
-                if (result.spoken.isNotBlank()) {
-                    onSentence(result.spoken)
+            if (fastCall.name == "web_search" && !result.ok && engineReady) {
+                // Offline search: do not speak the failure; let the model answer from its own knowledge.
+                offlineNudge = OFFLINE_NUDGE
+            } else {
+                // A tool that already produced a spoken sentence is spoken as it is. The model only
+                // summarizes a tool that gave data but no sentence, and only when it is usable.
+                if (result.spoken.isNotBlank() || result.feedToModel == null || !engineReady) {
+                    if (result.spoken.isNotBlank()) {
+                        onSentence(result.spoken)
+                    }
+                    onEpisodeComplete(userText, result.spoken, fastCall, false)
+                    return
                 }
-                onEpisodeComplete(userText, result.spoken, call, false)
+                val obsPrompt = prompts.prompt(
+                    activeHistory(),
+                    "User asked: $userText\nTool ${fastCall.name} observed:\n${result.feedToModel}\nSummarize concisely for the user.",
+                )
+                val answer = streamSayResponse(
+                    prompt = obsPrompt,
+                    grammar = prompts.sayOnlyGrammar(),
+                    maxTokens = replyMaxTokens(),
+                    sampling = SamplingConfig(temperature = 0.35f, repeatPenalty = 1.18f),
+                    fallback = result.spoken,
+                    onSentence = onSentence,
+                )
+                recordTurn(userText, "SAY: $answer")
+                onEpisodeComplete(userText, answer, fastCall, false)
                 return
             }
-            val obsPrompt = prompts.prompt(
-                activeHistory(),
-                "User asked: $userText\nTool ${call.name} observed:\n${result.feedToModel}\nSummarize concisely for the user.",
-            )
-            val answer = streamSayResponse(
-                prompt = obsPrompt,
-                grammar = prompts.sayOnlyGrammar(),
-                maxTokens = replyMaxTokens(),
-                sampling = SamplingConfig(temperature = 0.35f, repeatPenalty = 1.18f),
-                fallback = result.spoken,
-                onSentence = onSentence,
-            )
-            recordTurn(userText, "SAY: $answer")
-            onEpisodeComplete(userText, answer, call, false)
-            return
         }
 
         val healthLevel = healthGuard?.level() ?: HealthGuard.Level.NORMAL
@@ -108,10 +117,10 @@ class Brain(
         val stated = if (aboutDevice || personalFacts == null) null else PersonalQuery.statedAttribute(userText)
         if (stated != null) {
             val (attr, value) = stated
+            // Not recorded in history: the model copied these replies into unrelated answers.
             val reply = runCatching { personalFacts!!.remember(attr, value) }
                 .fold({ "Got it, your $attr is $value. I'll remember that." }, { "Sorry, I couldn't save that." })
             onSentence(reply)
-            recordTurn(userText, "SAY: $reply")
             onEpisodeComplete(userText, reply, null, false)
             return
         }
@@ -121,17 +130,20 @@ class Brain(
             if (known != null || memoryContext.isNullOrBlank()) {
                 val reply = if (known != null) "Your $askedAttr is $known." else "I don't know your $askedAttr yet. Tell me and I'll remember it."
                 onSentence(reply)
-                recordTurn(userText, "SAY: $reply")
                 onEpisodeComplete(userText, reply, null, false)
                 return
             }
         }
         val sampling = expertRouter?.selectAndActivate(userText, engine) ?: SamplingConfig()
+        val turns = activeHistory()
+        // Echo of the user, or a repeat of an earlier reply, is never spoken on the first sentence.
+        val rejectFirst: (String) -> Boolean = { s -> EchoGuard.isEcho(userText, s) || repeatsHistory(s, turns) }
         val promptText = prompts.prompt(
-            history = activeHistory(),
+            history = turns,
             user = userText,
             selfStateLine = selfState,
             memoryContext = memoryContext,
+            extraNudge = offlineNudge,
         )
         val t0 = clockMillis()
         val firstRun = streamSayOrCollectTool(
@@ -140,7 +152,7 @@ class Brain(
             grammar = prompts.grammar(),
             maxTokens = maxTokens,
             sampling = sampling,
-            echoGuardUserText = userText,
+            rejectFirstSentence = rejectFirst,
             onSentence = onSentence,
         )
 
@@ -149,17 +161,19 @@ class Brain(
         when (parsed) {
             is ModelOutput.Say -> {
                 val replyText = parsed.text
-                if (!firstRun.abortedForEcho && replyText.isNotBlank() && !EchoGuard.isEcho(userText, replyText)) {
+                val repeats = repeatsHistory(replyText, turns)
+                val echoed = firstRun.abortedForEcho || replyText.isBlank() || EchoGuard.isEcho(userText, replyText) || repeats
+                if (!echoed) {
                     recordTurn(userText, "SAY: $replyText")
                     onEpisodeComplete(userText, replyText, null, false)
                     return
                 }
 
-                // Echo detected (either buffered at first sentence or full reply) -> retry once with anti-echo sampling.
-                if (firstRun.abortedForEcho || replyText.isBlank() || EchoGuard.isEcho(userText, replyText)) {
-                    log("EchoGuard triggered on first pass; retrying with anti-echo sampling")
+                // Echo or repeat detected (either buffered at first sentence or full reply) -> retry once with anti-echo sampling.
+                run {
+                    log("EchoGuard or repeat triggered on first pass; retrying with anti-echo sampling")
                     val retryPrompt = prompts.prompt(
-                        history = activeHistory(),
+                        history = turns,
                         user = userText,
                         selfStateLine = selfState,
                         memoryContext = memoryContext,
@@ -171,12 +185,14 @@ class Brain(
                         grammar = prompts.sayOnlyGrammar(),
                         maxTokens = maxTokens,
                         sampling = RETRY_SAMPLING,
-                        echoGuardUserText = userText,
+                        rejectFirstSentence = rejectFirst,
                         onSentence = if (firstRun.spokeAnything) ({}) else onSentence,
                     )
                     val retryParsed = parseModelOutput(retryRun.raw)
                     val retryText = (retryParsed as? ModelOutput.Say)?.text.orEmpty()
-                    if (!retryRun.abortedForEcho && retryText.isNotBlank() && !EchoGuard.isEcho(userText, retryText)) {
+                    if (!retryRun.abortedForEcho && retryText.isNotBlank() &&
+                        !EchoGuard.isEcho(userText, retryText) && !repeatsHistory(retryText, turns)
+                    ) {
                         recordTurn(userText, "SAY: $retryText")
                         onEpisodeComplete(userText, retryText, null, false)
                         return
@@ -246,7 +262,7 @@ class Brain(
             grammar = grammar,
             maxTokens = maxTokens,
             sampling = sampling,
-            echoGuardUserText = null,
+            rejectFirstSentence = null,
             onSentence = onSentence,
         )
         return when (val out = parseModelOutput(collected.raw)) {
@@ -271,7 +287,7 @@ class Brain(
         grammar: String?,
         maxTokens: Int,
         sampling: SamplingConfig,
-        echoGuardUserText: String?,
+        rejectFirstSentence: ((String) -> Boolean)?,
         onSentence: suspend (String) -> Unit,
     ): StreamResult = coroutineScope {
         val raw = StringBuilder()
@@ -360,7 +376,7 @@ class Brain(
             for (sentence in sentences) {
                 if (!firstChecked) {
                     firstChecked = true
-                    if (echoGuardUserText != null && EchoGuard.isEcho(echoGuardUserText, sentence)) {
+                    if (rejectFirstSentence != null && rejectFirstSentence(sentence)) {
                         abortedForEcho = true
                         cancelledByConsumer.set(true)
                         break
@@ -384,6 +400,27 @@ class Brain(
             spokeAnything = spokeAnything,
             abortedForEcho = abortedForEcho,
         )
+    }
+
+    /** True when [reply] is a near-duplicate of any earlier assistant turn in [turns]. */
+    private fun repeatsHistory(reply: String, turns: List<Turn>): Boolean {
+        val norm = normalizeForRepeat(reply)
+        if (norm.isEmpty()) return false
+        return turns.any { turn ->
+            val prev = stripSayPrefix(turn.assistant)
+            normalizeForRepeat(prev) == norm || EchoGuard.isEcho(prev, reply)
+        }
+    }
+
+    private fun normalizeForRepeat(text: String): String =
+        stripSayPrefix(text).lowercase()
+            .replace(Regex("[^\\p{L}\\p{N}\\s]"), "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+    private fun stripSayPrefix(text: String): String {
+        val trimmed = text.trimStart()
+        return if (trimmed.startsWith("SAY:", ignoreCase = true)) trimmed.substring(4).trimStart() else trimmed
     }
 
     private fun replyMaxTokens(): Int =
@@ -419,6 +456,7 @@ class Brain(
         const val OVERHEATING_MSG = "I'm overheating, so I'll keep to basic commands."
         const val ECHO_FALLBACK_MSG = "I'm not sure how to answer that yet."
         private const val ANTI_ECHO_NUDGE = "Do NOT repeat the user's words. Answer directly."
+        private const val OFFLINE_NUDGE = "No internet. Answer from your own knowledge in one sentence; if unsure, say you are not sure."
         private val RETRY_SAMPLING = SamplingConfig(
             temperature = 0.72f,
             repeatPenalty = 1.32f,

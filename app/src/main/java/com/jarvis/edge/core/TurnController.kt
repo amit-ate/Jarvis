@@ -5,6 +5,7 @@ import com.jarvis.edge.audio.Speaker
 import com.jarvis.edge.audio.SpeechSegmenter
 import com.jarvis.edge.audio.Transcriber
 import com.jarvis.edge.audio.TranscriptArbiter
+import com.jarvis.edge.audio.WakeRemnant
 import com.jarvis.edge.brain.Brain
 import com.jarvis.edge.brain.FastIntents
 import kotlinx.coroutines.CancellationException
@@ -87,7 +88,7 @@ class TurnController(
             }
 
             val samples = capturedSamples ?: return
-            val finalLive = live.finish().trim()
+            val finalLive = WakeRemnant.clean(live.finish())
             onSpeechActivity()
 
             setState(AssistantState.THINKING)
@@ -130,7 +131,7 @@ class TurnController(
             if (FastIntents.isClosedCommand(finalLive) || accurate == null || (preferStreaming && finalLive.length >= 3)) {
                 transcript = arbiter.applyCorrections(finalLive, corrections).trim()
             } else {
-                accurateRaw = accurate.transcribe(samples).trim()
+                accurateRaw = WakeRemnant.clean(accurate.transcribe(samples))
                 val arb = arbiter.arbitrate(
                     live = finalLive,
                     accurate = accurateRaw,
