@@ -24,14 +24,19 @@ interface Speaker {
 }
 
 class SherpaSpeaker(
-    ttsDir: File,
+    private val ttsDir: File,
     private val cacheDir: File,
-    private val voiceId: String = "en_GB-alan-medium",
+    voice: com.jarvis.edge.core.TtsVoice? = null,
     private val speed: Float = 1.0f,
-    numThreads: Int = 2,
+    private val numThreads: Int = 2,
 ) : Speaker {
 
-    private val tts: OfflineTts
+    private val ttsLock = Any()
+    private var tts: OfflineTts
+    @Volatile private var voiceId: String = voice?.id ?: "en_GB-alan-medium"
+    @Volatile private var sid: Int = voice?.sid ?: 0
+    /** The models root (ttsDir's parent): voice paths are relative to it. */
+    private val modelsRoot: File get() = ttsDir.parentFile ?: ttsDir
     private val activeTrack = AtomicReference<AudioTrack?>(null)
     @Volatile
     private var stopped = false
@@ -41,9 +46,18 @@ class SherpaSpeaker(
 
     init {
         cacheDir.mkdirs()
+        tts = build(voice)
+    }
+
+    val currentVoiceId: String get() = voiceId
+
+    private fun build(voice: com.jarvis.edge.core.TtsVoice?): OfflineTts {
+        val model = voice?.modelFile(modelsRoot) ?: File(ttsDir, "en_GB-alan-medium.onnx")
+        val tokens = voice?.tokensFile(modelsRoot) ?: File(ttsDir, "tokens.txt")
         val vits = OfflineTtsVitsModelConfig(
-            model = File(ttsDir, "en_GB-alan-medium.onnx").absolutePath,
-            tokens = File(ttsDir, "tokens.txt").absolutePath,
+            model = model.absolutePath,
+            tokens = tokens.absolutePath,
+            // Every Piper voice uses the same espeak-ng data, shipped once in models/tts.
             dataDir = File(ttsDir, "espeak-ng-data").absolutePath,
         )
         val modelConfig = OfflineTtsModelConfig(
@@ -52,15 +66,30 @@ class SherpaSpeaker(
             debug = false,
             provider = "cpu",
         )
-        val config = OfflineTtsConfig(model = modelConfig)
-        tts = OfflineTts(null, config)
+        return OfflineTts(null, OfflineTtsConfig(model = modelConfig))
     }
+
+    /** Switches to [voice] (loads its model; cached phrases are per voice). */
+    fun switchVoice(voice: com.jarvis.edge.core.TtsVoice) {
+        if (voice.id == voiceId) return
+        val next = build(voice)
+        val old = synchronized(ttsLock) {
+            val o = tts
+            tts = next
+            voiceId = voice.id
+            sid = voice.sid
+            o
+        }
+        runCatching { old.release() }
+    }
+
+    private fun generate(text: String) = synchronized(ttsLock) { tts.generate(text, sid, speed) }
 
     fun prewarmFixedPhrases() {
         FIXED_PHRASES.forEach { phrase ->
             val file = cacheFile(phrase)
             if (!file.exists()) {
-                val audio = tts.generate(phrase, 0, speed)
+                val audio = generate(phrase)
                 writePcmCache(file, audio.sampleRate, audio.samples)
             }
         }
@@ -75,7 +104,9 @@ class SherpaSpeaker(
         val (sampleRate, pcm) = if (cached.exists()) {
             readPcmCache(cached)
         } else {
-            val audio = tts.generate(clean, 0, speed)
+            val t0 = System.currentTimeMillis()
+            val audio = generate(clean)
+            android.util.Log.d("JarvisTts", "voice=$voiceId ${System.currentTimeMillis() - t0} ms for ${audio.samples.size * 1000L / maxOf(1, audio.sampleRate)} ms of speech")
             val shorts = floatToPcm16(audio.samples)
             writePcmCacheShorts(cached, audio.sampleRate, shorts)
             audio.sampleRate to shorts
@@ -101,7 +132,7 @@ class SherpaSpeaker(
 
     fun release() {
         stop()
-        tts.release()
+        synchronized(ttsLock) { tts.release() }
     }
 
     private fun playBlocking(sampleRate: Int, pcm: ShortArray) {

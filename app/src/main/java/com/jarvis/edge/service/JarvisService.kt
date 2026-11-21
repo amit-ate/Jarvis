@@ -391,6 +391,10 @@ class JarvisService : Service() {
             android.util.Log.i("JarvisVoice", "accurate ASR: $loadedAsr (${accurate?.javaClass?.simpleName})")
 
             val ttsSpeaker = SherpaSpeaker(
+                voice = com.jarvis.edge.core.Voices.resolve(
+                    paths.root,
+                    getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("voice", null),
+                ).also { android.util.Log.i("JarvisVoice", "speaking voice: ${it?.id}") },
                 ttsDir = File(paths.root, "tts"),
                 cacheDir = File(cacheDir, "tts_cache"),
             ).also { speaker = it }
