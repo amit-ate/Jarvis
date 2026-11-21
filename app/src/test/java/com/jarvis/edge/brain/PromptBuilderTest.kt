@@ -88,9 +88,17 @@ class PromptBuilderTest {
         )
         val prefixEnd = base.indexOf("where is my key")
         assertEquals(base.substring(0, prefixEnd), enriched.substring(0, prefixEnd))
-        assertTrue("[Self: calm]" in enriched)
+        assertTrue("[Phone status: calm]" in enriched)
         assertTrue("[Memory: key is on the hook]" in enriched)
         assertTrue("[Rule: Do NOT repeat.]" in enriched)
+    }
+
+    @Test
+    fun `self state line renders once as phone status without a Self prefix`() {
+        val p = builder.prompt(emptyList(), "hi", selfStateLine = "Self: bat=50%")
+        assertTrue("[Phone status: bat=50%]" in p)
+        assertEquals(1, Regex("\\[Phone status: ").findAll(p).count())
+        assertFalse("Self:" in p)
     }
 
     @Test

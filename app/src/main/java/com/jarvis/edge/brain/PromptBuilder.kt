@@ -63,8 +63,9 @@ class PromptBuilder @JvmOverloads constructor(
             appendAssistantTurn(this, turn.assistant)
         }
         val userPayload = buildString {
-            if (!selfStateLine.isNullOrBlank()) {
-                append("[Self: ").append(selfStateLine.trim()).append("]\n")
+            val phoneLine = selfStateLine?.trim()?.replace(SELF_PREFIX_REGEX, "")?.trim()
+            if (!phoneLine.isNullOrBlank()) {
+                append("[Phone status: ").append(phoneLine).append("]\n")
             }
             if (!memoryContext.isNullOrBlank()) {
                 append("[Memory: ").append(memoryContext.trim()).append("]\n")
@@ -168,6 +169,7 @@ class PromptBuilder @JvmOverloads constructor(
 
     companion object {
         const val MAX_HISTORY_TURNS = 3
+        private val SELF_PREFIX_REGEX = Regex("^self:\\s*", RegexOption.IGNORE_CASE)
         private const val SYSTEM_INSTRUCTION =
             "You are Jarvis, a concise voice assistant. Answer directly in 1-2 sentences as 'SAY: <answer>' OR call a tool JSON. NEVER repeat or parrot the user's question. Use web_search if unsure."
     }

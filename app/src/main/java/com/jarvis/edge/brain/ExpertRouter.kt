@@ -32,6 +32,12 @@ data class ExpertProfile(
 class ExpertRouter(
     private val profiles: Map<ExpertDomain, ExpertProfile> = defaultProfiles(),
     private val adaptersDir: File? = null,
+    /**
+     * When true, every turn keeps the CONVERSATION expert's LoRA/control vector (plus the evolved vector) and the
+     * classified domain only changes sampling. Switching adapters wipes the KV cache, so per-turn switching made every
+     * topic change re-read the whole prompt (12-15 s on the phone instead of ~2-3 s).
+     */
+    private val steadyAdapters: Boolean = false,
 ) {
     private val loadedLoras = WeakHashMap<LlmEngine, MutableMap<String, Long>>()
     private val activeLoras = WeakHashMap<LlmEngine, List<Pair<Long, Float>>>()
@@ -98,10 +104,15 @@ class ExpertRouter(
     fun selectAndActivate(userText: String, engine: LlmEngine): SamplingConfig {
         val domain = classify(userText)
         val profile = profiles[domain] ?: DEFAULT_PROFILES[domain] ?: ExpertProfile(domain)
+        val adapterProfile = if (steadyAdapters) {
+            profiles[ExpertDomain.CONVERSATION] ?: DEFAULT_PROFILES[ExpertDomain.CONVERSATION] ?: ExpertProfile(ExpertDomain.CONVERSATION)
+        } else {
+            profile
+        }
 
-        val desiredAdapters = resolveAdapters(profile, engine)
-        val domainVec = if (profile.cvecScale != 0.0f && profile.cvecScale.isFinite()) {
-            resolveControlVector(profile)
+        val desiredAdapters = resolveAdapters(adapterProfile, engine)
+        val domainVec = if (adapterProfile.cvecScale != 0.0f && adapterProfile.cvecScale.isFinite()) {
+            resolveControlVector(adapterProfile)
         } else {
             null
         }
@@ -110,8 +121,8 @@ class ExpertRouter(
         val entries = ArrayList<Pair<ControlVector, Float>>(2)
         val sigParts = ArrayList<String>(2)
         if (domainVec != null) {
-            entries.add(domainVec to profile.cvecScale)
-            sigParts.add("d:${profile.cvecPath}@${profile.cvecScale}:${domainVec.ilStart}-${domainVec.ilEnd}")
+            entries.add(domainVec to adapterProfile.cvecScale)
+            sigParts.add("d:${adapterProfile.cvecPath}@${adapterProfile.cvecScale}:${domainVec.ilStart}-${domainVec.ilEnd}")
         }
         if (evolved != null) {
             val (eVec, eScale) = evolved
@@ -275,10 +286,11 @@ class ExpertRouter(
         fun fromManifestFile(
             manifestFile: File,
             adaptersDir: File? = manifestFile.parentFile,
+            steadyAdapters: Boolean = false,
         ): ExpertRouter {
             val base = DEFAULT_PROFILES.toMutableMap()
             if (!manifestFile.isFile || manifestFile.length() <= 0L) {
-                return ExpertRouter(base, adaptersDir)
+                return ExpertRouter(base, adaptersDir, steadyAdapters)
             }
 
             runCatching {
@@ -293,7 +305,7 @@ class ExpertRouter(
                     parseObjectEntries(mapNode, base)
                 }
             }
-            return ExpertRouter(base, adaptersDir)
+            return ExpertRouter(base, adaptersDir, steadyAdapters)
         }
 
         private fun parseArrayEntries(

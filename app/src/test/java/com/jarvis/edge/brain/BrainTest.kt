@@ -359,7 +359,67 @@ class BrainTest {
         val llmSpoken = mutableListOf<String>()
         brain.respond("do you know my lock code") { llmSpoken.add(it) }
         assertEquals(listOf("Your bike lock code is 1234."), llmSpoken)
-        assertTrue(fakeLlm.prompts[0].contains("[Self: mood=focused, battery=85%]"))
+        assertFalse(fakeLlm.prompts[0].contains("[Phone status:"))
         assertTrue(fakeLlm.prompts[0].contains("[Memory: bike lock is 1234]"))
+    }
+
+    @Test
+    fun `asking own age with no memory says it does not know and never calls the model`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, _ ->
+            throw AssertionError("LLM must not be called for an unknown personal attribute")
+        }
+        val tools = listOf(simpleTimeTool())
+        val episodes = mutableListOf<String>()
+        val brain = Brain(
+            fast = FastIntents,
+            llm = fakeLlm,
+            prompts = PromptBuilder(tools),
+            tools = ToolRegistry(tools),
+            memoryProvider = { null },
+            onEpisodeComplete = { _, reply, _, _ -> episodes.add(reply) },
+        )
+        val spoken = mutableListOf<String>()
+        brain.respond("What's my age?") { spoken.add(it) }
+        val expected = "I don't know your age yet. Tell me and I'll remember it."
+        assertEquals(listOf(expected), spoken)
+        assertEquals(0, fakeLlm.calls)
+        assertEquals(listOf(expected), episodes)
+    }
+
+    @Test
+    fun `asking own age with memory present calls the model`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: You are 30 years old.") }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(
+            fast = FastIntents,
+            llm = fakeLlm,
+            prompts = PromptBuilder(tools),
+            tools = ToolRegistry(tools),
+            memoryProvider = { "User is 30 years old" },
+        )
+        val spoken = mutableListOf<String>()
+        brain.respond("What's my age?") { spoken.add(it) }
+        assertEquals(1, fakeLlm.calls)
+        assertEquals(listOf("You are 30 years old."), spoken)
+        assertTrue(fakeLlm.prompts[0].contains("[Memory: User is 30 years old]"))
+    }
+
+    @Test
+    fun `phone status is injected only for device questions`() = runBlocking {
+        val fakeLlm = FakeLlm { _, _, _, onToken -> onToken("SAY: Sure.") }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(
+            fast = FastIntents,
+            llm = fakeLlm,
+            prompts = PromptBuilder(tools),
+            tools = ToolRegistry(tools),
+            selfStateProvider = { "Self: bat=85%" },
+        )
+        brain.respond("tell me a joke") { }
+        brain.respond("how is my battery") { }
+        assertEquals(2, fakeLlm.calls)
+        assertFalse(fakeLlm.prompts[0].contains("[Phone status:"))
+        assertTrue(fakeLlm.prompts[1].contains("[Phone status: bat=85%]"))
+        assertFalse(fakeLlm.prompts[1].contains("Self:"))
     }
 }

@@ -352,7 +352,7 @@ class JarvisService : Service() {
                 startStatus = "Missing ${paths.llmRelative()} — basic commands only"
             }
 
-            val expertRouter = ExpertRouter.fromManifestFile(File(adaptersDir, "experts.json"), adaptersDir)
+            val expertRouter = ExpertRouter.fromManifestFile(File(adaptersDir, "experts.json"), adaptersDir, steadyAdapters = true)
             fun applyModelVersionToRouter(version: ModelVersion?) {
                 val rawPath = version?.adapterPath?.takeIf { it.isNotBlank() }
                 val vec = if (rawPath != null) {

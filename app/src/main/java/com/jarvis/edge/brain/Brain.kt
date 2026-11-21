@@ -101,9 +101,18 @@ class Brain(
         }
 
         val maxTokens = replyMaxTokens()
-        val sampling = expertRouter?.selectAndActivate(userText, engine) ?: SamplingConfig()
-        val selfState = selfStateProvider()
+        val aboutDevice = PersonalQuery.isAboutDevice(userText)
+        val selfState = if (aboutDevice) selfStateProvider() else null
         val memoryContext = memoryProvider(userText)
+        val askedAttr = if (aboutDevice) null else PersonalQuery.askedAttribute(userText)
+        if (askedAttr != null && memoryContext.isNullOrBlank()) {
+            val reply = "I don't know your $askedAttr yet. Tell me and I'll remember it."
+            onSentence(reply)
+            recordTurn(userText, "SAY: $reply")
+            onEpisodeComplete(userText, reply, null, false)
+            return
+        }
+        val sampling = expertRouter?.selectAndActivate(userText, engine) ?: SamplingConfig()
         val promptText = prompts.prompt(
             history = activeHistory(),
             user = userText,

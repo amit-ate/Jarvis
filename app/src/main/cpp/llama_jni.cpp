@@ -76,7 +76,8 @@ struct ScopedBigCoreAffinity {
 struct LlmSession {
   llama_model *model = nullptr;
   llama_context *ctx = nullptr;
-  ggml_threadpool_t threadpool = nullptr;
+  ggml_threadpool_t threadpool = nullptr;       // decode: 3 big cores, one left for audio/TTS
+  ggml_threadpool_t threadpool_batch = nullptr; // prompt prefill: all 4 big cores
   std::vector<llama_token> prev_tokens;
   std::mutex mu;
   llama_sampler *cached_grammar = nullptr;
@@ -329,7 +330,7 @@ JNIEXPORT jlong JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLoad(
   cparams.n_batch = 512;
   cparams.n_ubatch = 512;
   cparams.n_threads = 3;
-  cparams.n_threads_batch = 3;
+  cparams.n_threads_batch = 4;
   cparams.no_perf = true;
 
   llama_context *ctx = llama_init_from_model(model, cparams);
@@ -341,14 +342,16 @@ JNIEXPORT jlong JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLoad(
   }
 
   ggml_threadpool_t tp = create_big_core_threadpool(3);
+  ggml_threadpool_t tp_batch = tp ? create_big_core_threadpool(4) : nullptr;
   if (tp) {
-    llama_attach_threadpool(ctx, tp, tp);
+    llama_attach_threadpool(ctx, tp, tp_batch ? tp_batch : tp);
   }
 
   auto *session = new LlmSession();
   session->model = model;
   session->ctx = ctx;
   session->threadpool = tp;
+  session->threadpool_batch = tp_batch;
   return reinterpret_cast<jlong>(session);
 }
 
@@ -975,6 +978,10 @@ JNIEXPORT void JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeUnload(
     if (session->threadpool) {
       ggml_threadpool_free(session->threadpool);
       session->threadpool = nullptr;
+    }
+    if (session->threadpool_batch) {
+      ggml_threadpool_free(session->threadpool_batch);
+      session->threadpool_batch = nullptr;
     }
   }
   delete session;

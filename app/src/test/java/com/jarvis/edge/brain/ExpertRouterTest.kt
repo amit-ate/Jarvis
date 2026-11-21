@@ -267,4 +267,34 @@ class ExpertRouterTest {
         router.selectAndActivate("", engine)
         assertEquals(defaultSig, router.appliedSignature(engine))
     }
+
+    @Test
+    fun `steady adapters keep one control vector across domains so the KV cache survives`(@TempDir tempDir: Path) {
+        val dir = tempDir.toFile()
+        val toolVec = ControlVector(nEmbd = 2, nLayersMinus1 = 3, ilStart = 1, ilEnd = 2, data = floatArrayOf(1f, 0f, 0f, 1f, 0f, 0f))
+        val convVec = ControlVector(nEmbd = 2, nLayersMinus1 = 3, ilStart = 1, ilEnd = 3, data = floatArrayOf(0f, 2f, 2f, 0f, 1f, 1f))
+        ControlVectorCodec.write(File(dir, "tool_expert.jvec"), toolVec)
+        ControlVectorCodec.write(File(dir, "conversation_expert.jvec"), convVec)
+        val manifest = File(dir, "experts.json").apply {
+            writeText(
+                """{"version":1,"experts":[
+                {"domain":"TOOL_USE","cvec_path":"tool_expert.jvec","cvec_scale":0.4,"cvec_layer_start":1,"cvec_layer_end":2,"temperature":0.2,"keywords":["flashlight"]},
+                {"domain":"CONVERSATION","cvec_path":"conversation_expert.jvec","cvec_scale":0.5,"cvec_layer_start":1,"cvec_layer_end":3,"temperature":0.5}]}""",
+            )
+        }
+        val router = ExpertRouter.fromManifestFile(manifest, dir, steadyAdapters = true)
+        val engine = TrackingLlmEngine()
+
+        val chat = router.selectAndActivate("Hey there", engine)
+        val tool = router.selectAndActivate("Turn on the flashlight", engine)
+        val why = router.selectAndActivate("Explain why the sky is blue", engine)
+        router.selectAndActivate("", engine)
+
+        assertEquals(1, engine.cvecCalls.size)
+        assertArrayEquals(floatArrayOf(0f, 1f, 1f, 0f, 0.5f, 0.5f), engine.cvecCalls[0].data, 1e-5f)
+        // Domains still pick their own sampling.
+        assertEquals(0.5f, chat.temperature, 1e-5f)
+        assertEquals(0.2f, tool.temperature, 1e-5f)
+        assertEquals(0.25f, why.temperature, 1e-5f)
+    }
 }
