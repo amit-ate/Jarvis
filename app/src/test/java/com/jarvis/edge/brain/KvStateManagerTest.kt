@@ -15,6 +15,7 @@ class KvStateManagerTest {
     private class CountingLlm : LlmEngine {
         var saves = 0
         var loads = 0
+        var loadResult = true
         override fun load(modelFile: File, contextTokens: Int) = Unit
         override fun generate(
             prompt: String,
@@ -29,7 +30,7 @@ class KvStateManagerTest {
         }
         override fun loadState(file: File): Boolean {
             loads++
-            return true
+            return loadResult
         }
         override fun unload() = Unit
         override val isLoaded: Boolean = true
@@ -52,7 +53,7 @@ class KvStateManagerTest {
     fun `restore with missing file returns false without calling engine`() {
         val kv = KvStateManager(File(dir, "kv"))
         val engine = CountingLlm()
-        assertFalse(kv.restore(engine, "nokey"))
+        assertEquals(KvRestoreResult.MISSING, kv.restore(engine, "nokey"))
         assertEquals(0, engine.loads)
     }
 
@@ -61,8 +62,19 @@ class KvStateManagerTest {
         val kv = KvStateManager(File(dir, "kv"))
         val engine = CountingLlm()
         assertTrue(kv.save(engine, "k"))
-        assertTrue(kv.restore(engine, "k"))
+        assertEquals(KvRestoreResult.RESTORED, kv.restore(engine, "k"))
         assertEquals(1, engine.loads)
+    }
+
+    @Test
+    fun `rejected state file is deleted and reported`() {
+        val kv = KvStateManager(File(dir, "kv"))
+        val engine = CountingLlm()
+        assertTrue(kv.save(engine, "k"))
+        engine.loadResult = false
+        assertEquals(KvRestoreResult.REJECTED, kv.restore(engine, "k"))
+        assertFalse(kv.fileFor("k").exists())
+        assertEquals(KvRestoreResult.MISSING, kv.restore(engine, "k"))
     }
 
     @Test

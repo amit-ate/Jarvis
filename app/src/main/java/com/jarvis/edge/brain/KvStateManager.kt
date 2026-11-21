@@ -3,6 +3,8 @@ package com.jarvis.edge.brain
 import java.io.File
 import java.security.MessageDigest
 
+enum class KvRestoreResult { RESTORED, MISSING, REJECTED }
+
 /** Saves and restores the model's KV cache, keyed by what shaped it (model, prompt, adapters). */
 class KvStateManager(private val kvDir: File) {
 
@@ -20,10 +22,13 @@ class KvStateManager(private val kvDir: File) {
         return engine.saveState(fileFor(key))
     }
 
-    fun restore(engine: LlmEngine, key: String): Boolean {
+    /** A file the engine rejects is deleted so it is never re-read; the caller should journal REJECTED. */
+    fun restore(engine: LlmEngine, key: String): KvRestoreResult {
         val f = fileFor(key)
-        if (!f.isFile) return false
-        return engine.loadState(f)
+        if (!f.isFile) return KvRestoreResult.MISSING
+        if (engine.loadState(f)) return KvRestoreResult.RESTORED
+        f.delete()
+        return KvRestoreResult.REJECTED
     }
 
     /** Deletes every kv-*.bin except the one for [key]; returns how many were removed. */
