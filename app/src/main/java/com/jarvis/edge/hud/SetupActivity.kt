@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,93 +50,63 @@ class SetupActivity : ComponentActivity() {
 
             val activeProfile = profiles.getOrNull(brandIndex)
 
+            JarvisTheme {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xFF0A0F1A))
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxSize().background(Jx.backdrop).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Text(
-                    text = "Infrared Device Setup",
-                    color = Color(0xFF38BDF8),
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-                Spacer(Modifier.height(16.dp))
-
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    listOf("tv", "ac").forEach { type ->
-                        val selected = deviceType == type
-                        Button(onClick = { deviceType = type }) {
-                            Text(if (selected) "[${type.uppercase()}]" else type.uppercase())
-                        }
+                ScreenHeader(title = "Remote control", subtitle = "infrared setup for your tv and ac", onBack = { finish() })
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    listOf("tv" to "TV", "ac" to "Air conditioner").forEach { (type, label) ->
+                        PillButton(label, onClick = { deviceType = type }, selected = deviceType == type)
                     }
                 }
-
-                Spacer(Modifier.height(24.dp))
-                Text(
-                    text = activeProfile?.let { "Brand ${brandIndex + 1}/${profiles.size}: ${it.brand}" }
-                        ?: "No code sets remaining for ${deviceType.uppercase()}.",
-                    color = Color.White,
-                    fontSize = 20.sp,
-                )
-
-                Spacer(Modifier.height(20.dp))
+                GlassPanel(Modifier.fillMaxWidth(), padding = androidx.compose.foundation.layout.PaddingValues(22.dp)) {
+                    if (activeProfile != null) {
+                        HudLabel("code set ${brandIndex + 1} of ${profiles.size}", size = 10)
+                        Spacer(Modifier.height(8.dp))
+                        Text(activeProfile.brand, color = Jx.Text, fontSize = 28.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.height(6.dp))
+                        Text("Point the phone at the ${if (deviceType == "tv") "TV" else "AC"} and send the power signal.", color = Jx.TextDim, fontSize = 14.sp)
+                    } else {
+                        Text("No code sets left for ${deviceType.uppercase()}.", color = Jx.Text, fontSize = 18.sp)
+                    }
+                }
                 if (activeProfile != null) {
-                    Button(
-                        onClick = {
-                            val power = activeProfile.commands["power"]
-                            if (power != null && irManager?.hasIrEmitter() == true) {
-                                irManager.transmit(power.carrierHz, power.pattern)
-                                tested = true
-                            } else {
-                                Toast.makeText(
-                                    this@SetupActivity,
-                                    "IR blaster not available on this device.",
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            }
-                        },
-                    ) {
-                        Text("Test power")
-                    }
-
-                    if (tested) {
-                        Spacer(Modifier.height(20.dp))
-                        Text("Did it react?", color = Color(0xFFE2E8F0), fontSize = 18.sp)
-                        Spacer(Modifier.height(12.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.Center,
-                        ) {
-                            Button(
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            RingButton(
                                 onClick = {
-                                    saveSelection(deviceType, activeProfile.commands)
-                                    Toast.makeText(
-                                        this@SetupActivity,
-                                        "Saved ${activeProfile.brand} for ${deviceType.uppercase()}",
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
-                                    finish()
+                                    val power = activeProfile.commands["power"]
+                                    if (power != null && irManager?.hasIrEmitter() == true) {
+                                        irManager.transmit(power.carrierHz, power.pattern)
+                                        tested = true
+                                    } else {
+                                        Toast.makeText(this@SetupActivity, "IR blaster not available on this device.", Toast.LENGTH_SHORT).show()
+                                    }
                                 },
-                            ) {
-                                Text("Yes")
-                            }
-                            Spacer(Modifier.width(16.dp))
-                            OutlinedButton(
-                                onClick = { brandIndex++ },
-                            ) {
-                                Text("No", color = Color.White)
+                                size = 88.dp, color = Jx.Cyan, filled = true,
+                            ) { Glyph(GlyphKind.WAVE, Color.White, 34.dp) }
+                            Spacer(Modifier.height(8.dp))
+                            HudLabel("test power", color = Jx.TextDim, size = 10)
+                        }
+                    }
+                    if (tested) {
+                        GlassPanel(Modifier.fillMaxWidth(), accent = Jx.Mint, brackets = false) {
+                            Text("Did it react?", color = Jx.Text, fontSize = 18.sp)
+                            Spacer(Modifier.height(12.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                PillButton("Yes, save it", onClick = {
+                                    saveSelection(deviceType, activeProfile.commands)
+                                    Toast.makeText(this@SetupActivity, "Saved ${activeProfile.brand} for ${deviceType.uppercase()}", Toast.LENGTH_SHORT).show()
+                                    finish()
+                                }, color = Jx.Mint, selected = true)
+                                PillButton("No, try next", onClick = { brandIndex++ })
                             }
                         }
                     }
-                } else {
-                    OutlinedButton(onClick = { finish() }) {
-                        Text("Close", color = Color.White)
-                    }
                 }
+            }
             }
         }
     }

@@ -98,9 +98,9 @@ class HudActivity : ComponentActivity(), SensorEventListener {
             var clockText by remember { mutableStateOf("") }
 
             LaunchedEffect(Unit) {
-                val fmt = DateTimeFormatter.ofPattern("h:mm a", Locale.US)
+                val fmt = DateTimeFormatter.ofPattern("h:mm a|EEE d MMM", Locale.US)
                 while (true) {
-                    clockText = LocalTime.now().format(fmt)
+                    clockText = java.time.LocalDateTime.now().format(fmt)
                     delay(10_000L)
                 }
             }
@@ -116,123 +116,27 @@ class HudActivity : ComponentActivity(), SensorEventListener {
             }
 
             if (fillWhite) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.White),
-                )
+                Box(Modifier.fillMaxSize().background(Color.White))
             } else {
-                val interaction = remember { MutableInteractionSource() }
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .combinedClickable(
-                                interactionSource = interaction,
-                                indication = null,
-                                onClick = {
-                                    if (state == AssistantState.SPEAKING) {
-                                        JarvisService.requestStopSpeaking(this@HudActivity)
-                                    } else if (state == AssistantState.IDLE) {
-                                        JarvisService.requestManualWake(this@HudActivity)
-                                    }
-                                },
-                                onLongClick = {
-                                    startActivity(Intent(this@HudActivity, SetupActivity::class.java))
-                                },
-                            )
-                            .padding(24.dp),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        if (state == AssistantState.IDLE && clockText.isNotEmpty()) {
-                            Text(
-                                text = clockText,
-                                color = Color(0xFF64748B),
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Spacer(Modifier.height(16.dp))
-                        }
-
-                        JarvisOrb(state = state, micLevel = micLevel, searching = searching)
-                        Spacer(Modifier.height(20.dp))
-
-                        Text(
-                            text = if (searching) "SEARCHING" else state.name,
-                            color = if (searching) Color(0xFFF59E0B) else Color(0xFF38BDF8),
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Spacer(Modifier.height(8.dp))
-
-                        if (transcript.isNotBlank()) {
-                            Text(
-                                text = "\"$transcript\"",
-                                color = Color(0xFF94A3B8),
-                                fontSize = 16.sp,
-                                textAlign = TextAlign.Center,
-                            )
-                            Spacer(Modifier.height(6.dp))
-                        }
-
-                        Text(
-                            text = reply.ifBlank { message },
-                            color = Color(0xFFE2E8F0),
-                            fontSize = 18.sp,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            startActivity(Intent(this@HudActivity, MindActivity::class.java))
+                JarvisTheme {
+                    HomeHud(
+                        state = state,
+                        searching = searching,
+                        micLevel = micLevel,
+                        transcript = transcript,
+                        reply = reply.ifBlank { message },
+                        clockText = clockText,
+                        expert = activeExpert,
+                        health = mindState.resources.healthLevel.toString(),
+                        factCount = mindState.facts.size,
+                        battery = mindState.resources.batteryPct,
+                        onOrbTap = {
+                            if (state == AssistantState.SPEAKING) JarvisService.requestStopSpeaking(this@HudActivity)
+                            else if (state == AssistantState.IDLE) JarvisService.requestManualWake(this@HudActivity)
                         },
-                        shape = RoundedCornerShape(20.dp),
-                        border = BorderStroke(1.dp, Color(0xFF334155)),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = Color(0xFF0F172A),
-                            contentColor = Color(0xFF38BDF8),
-                        ),
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(top = 18.dp, end = 16.dp),
-                    ) {
-                        Text(
-                            text = "MIND (${mindState.facts.size})",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            startActivity(Intent(this@HudActivity, ChatActivity::class.java))
-                        },
-                        shape = RoundedCornerShape(20.dp),
-                        border = BorderStroke(1.dp, Color(0xFF334155)),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = Color(0xFF0F172A),
-                            contentColor = Color(0xFF38BDF8),
-                        ),
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(top = 18.dp, start = 16.dp),
-                    ) {
-                        Text(text = "CHAT", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    }
-
-                    Text(
-                        text = "Expert: $activeExpert • ${mindState.resources.healthLevel}",
-                        color = Color(0xFF64748B),
-                        fontSize = 12.sp,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 14.dp),
+                        onChat = { startActivity(Intent(this@HudActivity, ChatActivity::class.java)) },
+                        onMind = { startActivity(Intent(this@HudActivity, MindActivity::class.java)) },
+                        onSetup = { startActivity(Intent(this@HudActivity, SetupActivity::class.java)) },
                     )
                 }
             }

@@ -1,5 +1,8 @@
 package com.jarvis.edge.hud
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -53,16 +56,16 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private val BgDark = Color(0xFF020617)
-private val SurfaceCard = Color(0xFF0F172A)
-private val SurfaceElevated = Color(0xFF1E293B)
-private val BorderSubtle = Color(0xFF334155)
-private val TextPrimary = Color(0xFFF8FAFC)
-private val TextSecondary = Color(0xFF94A3B8)
-private val CyanAccent = Color(0xFF38BDF8)
-private val EmeraldHealthy = Color(0xFF34D399)
-private val AmberWarning = Color(0xFFFBBF24)
-private val CoralAlert = Color(0xFFF87171)
+private val BgDark = Jx.Void
+private val SurfaceCard = Jx.Panel
+private val SurfaceElevated = Jx.PanelHi
+private val BorderSubtle = Jx.LineHi
+private val TextPrimary = Jx.Text
+private val TextSecondary = Jx.TextDim
+private val CyanAccent = Jx.Cyan
+private val EmeraldHealthy = Jx.Mint
+private val AmberWarning = Jx.Amber
+private val CoralAlert = Jx.Red
 
 private val MindDarkColorScheme = darkColorScheme(
     primary = CyanAccent,
@@ -112,10 +115,10 @@ fun MindScreen(
 
             ScrollableTabRow(
                 selectedTabIndex = selectedTab,
-                containerColor = SurfaceCard,
+                containerColor = Jx.Void,
                 contentColor = CyanAccent,
                 edgePadding = 12.dp,
-                divider = { HorizontalDivider(color = SurfaceElevated) },
+                divider = { HorizontalDivider(color = Jx.Line) },
                 indicator = { tabPositions ->
                     TabRowDefaults.SecondaryIndicator(
                         modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
@@ -178,7 +181,7 @@ private fun MindHeader(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(SurfaceCard)
+            .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Jx.Deep, Jx.Void)))
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -186,26 +189,14 @@ private fun MindHeader(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            OutlinedButton(
-                onClick = onBack,
-                shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(1.dp, BorderSubtle),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Text("←", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            }
+            RingButton(onClick = onBack, size = 40.dp) { Glyph(GlyphKind.BACK, TextPrimary, 18.dp) }
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Jarvis Mind",
-                    color = TextPrimary,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    text = if (learningPaused) "Learning paused" else "Adaptive learning active",
+                Text(text = "Mind", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                HudLabel(
+                    if (learningPaused) "learning paused" else "learning from you",
                     color = if (learningPaused) AmberWarning else EmeraldHealthy,
-                    fontSize = 12.sp,
+                    size = 10,
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -284,43 +275,42 @@ private fun JournalTab(items: List<JournalItemUi>) {
     ) {
         items(sorted, key = { it.id }) { item ->
             val badgeColor = journalBadgeColor(item.type, item.undone)
-            MindCard(dimmed = item.undone) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    StatusPill(
-                        text = item.type.uppercase(Locale.US),
-                        color = badgeColor,
-                    )
-                    Text(
-                        text = formatTimestamp(item.timestampMs),
-                        color = TextSecondary,
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
+            // Timeline row: a coloured node on a rail, then the event.
+            Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
+                Box(Modifier.width(22.dp).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
+                    Box(Modifier.width(1.dp).fillMaxHeight().background(Jx.Line))
+                    Box(
+                        Modifier.padding(top = 6.dp).size(10.dp).clip(androidx.compose.foundation.shape.CircleShape)
+                            .background(badgeColor.copy(alpha = if (item.undone) 0.4f else 1f)),
                     )
                 }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = item.summary,
-                    color = if (item.undone) TextSecondary else TextPrimary,
-                    fontSize = 14.sp,
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    if (item.undone) {
-                        StatusPill(text = "Undone", color = TextSecondary)
-                    } else {
-                        ActionButton(
-                            label = "Undo",
-                            accent = CoralAlert,
-                            onClick = { MindUiBridge.undoJournal(item.id) },
-                        )
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f).padding(bottom = 6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        HudLabel(item.type.replace('_', ' '), color = badgeColor, size = 10)
+                        Spacer(Modifier.width(8.dp))
+                        HudLabel(formatTimestamp(item.timestampMs), color = Jx.TextFaint, size = 9, modifier = Modifier.weight(1f))
+                        if (item.undone) {
+                            HudLabel("undone", color = TextSecondary, size = 9)
+                        } else {
+                            Text(
+                                "Undo",
+                                color = CoralAlert.copy(alpha = 0.9f),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.clip(RoundedCornerShape(8.dp))
+                                    .clickable { MindUiBridge.undoJournal(item.id) }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                            )
+                        }
                     }
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = item.summary,
+                        color = if (item.undone) TextSecondary else TextPrimary,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp,
+                    )
                 }
             }
         }
@@ -780,11 +770,11 @@ private fun MindCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (dimmed) SurfaceCard.copy(alpha = 0.65f) else SurfaceCard,
+            containerColor = if (dimmed) SurfaceCard.copy(alpha = 0.55f) else SurfaceCard.copy(alpha = 0.85f),
         ),
-        border = BorderStroke(1.dp, SurfaceElevated),
+        border = BorderStroke(1.dp, Jx.Line),
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             content()
@@ -834,12 +824,7 @@ private fun EmptyStateCard(
 
 @Composable
 private fun SectionTitle(text: String) {
-    Text(
-        text = text,
-        color = CyanAccent,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.SemiBold,
-    )
+    HudLabel(text, color = CyanAccent, size = 11)
 }
 
 @Composable

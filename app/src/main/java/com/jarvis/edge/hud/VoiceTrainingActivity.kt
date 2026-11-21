@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -46,15 +47,18 @@ import kotlinx.coroutines.withContext
 class VoiceTrainingActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = android.graphics.Color.parseColor("#060B16")
+        window.navigationBarColor = android.graphics.Color.parseColor("#02040A")
         val store = JarvisService.voiceSamples()
         val prompts = VoicePrompts.SENTENCES
         setContent {
             val state by JarvisService.state.collectAsState()
+            val micLevel by JarvisService.micLevel.collectAsState()
             val result by JarvisService.enrollResult.collectAsState()
             var done by remember { mutableStateOf(emptySet<String>()) }
             var turnCount by remember { mutableIntStateOf(0) }
             var index by remember { mutableIntStateOf(0) }
-            var status by remember { mutableStateOf("Tap Record, wait for the chime, then read the sentence.") }
+            var status by remember { mutableStateOf("Tap the mic, wait for the chime, then read the sentence.") }
             var waiting by remember { mutableStateOf(false) }
             var keepTurns by remember { mutableStateOf(JarvisService.saveVoiceSamplesEnabled(this@VoiceTrainingActivity)) }
             val startSeq = remember { result?.seq ?: 0L }
@@ -87,67 +91,75 @@ class VoiceTrainingActivity : ComponentActivity() {
                     status = "Saved. Next one:"
                     index = nextUnrecorded(index)
                 } else {
-                    status = "I didn't hear anything. Tap Record and try again."
+                    status = "I didn't hear anything. Tap the mic and try again."
                 }
             }
 
+            JarvisTheme {
             Column(
-                Modifier.fillMaxSize().background(Color(0xFF020617)).padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                Modifier.fillMaxSize().background(Jx.backdrop).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Train my voice", color = Color(0xFF38BDF8), fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.weight(1f))
-                    TextButton(onClick = { finish() }) { Text("Done", color = Color(0xFF94A3B8)) }
-                }
-                Text(
-                    "Recorded ${done.size} of ${prompts.size} sentences · $turnCount request recordings",
-                    color = Color(0xFF94A3B8),
-                    fontSize = 13.sp,
+                ScreenHeader(
+                    title = "Train my voice",
+                    subtitle = "${done.size} of ${prompts.size} sentences · $turnCount requests kept",
+                    onBack = { finish() },
                 )
-                Text(status, color = Color(0xFF64748B), fontSize = 14.sp)
-                Text(
-                    prompts[index],
-                    color = Color(0xFFE2E8F0),
-                    fontSize = 26.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF1E293B), RoundedCornerShape(14.dp))
-                        .padding(20.dp),
-                )
-                if (prompts[index] in done) {
-                    Text("Already recorded. Record again to add another take.", color = Color(0xFF64748B), fontSize = 12.sp)
+                // Progress bar.
+                val frac = if (prompts.isEmpty()) 0f else done.size.toFloat() / prompts.size
+                Box(Modifier.fillMaxWidth().height(6.dp).background(Jx.PanelHi, RoundedCornerShape(3.dp))) {
+                    Box(
+                        Modifier.fillMaxWidth(frac).height(6.dp)
+                            .background(androidx.compose.ui.graphics.Brush.horizontalGradient(listOf(Jx.Blue, Jx.Mint)), RoundedCornerShape(3.dp)),
+                    )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Button(
-                        onClick = {
-                            waiting = true
-                            status = "Listening… read it now."
-                            JarvisService.requestEnroll(this@VoiceTrainingActivity, prompts[index])
-                        },
-                        enabled = !waiting && state == AssistantState.IDLE,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0369A1)),
-                    ) { Text(if (waiting) "Listening…" else "Record") }
-                    Spacer(Modifier.width(12.dp))
-                    TextButton(onClick = { index = nextUnrecorded(index); status = "Skipped." }, enabled = !waiting) {
-                        Text("Skip", color = Color(0xFF94A3B8))
+                Spacer(Modifier.height(6.dp))
+                GlassPanel(Modifier.fillMaxWidth(), accent = if (waiting) Jx.Mint else Jx.Cyan, padding = androidx.compose.foundation.layout.PaddingValues(22.dp)) {
+                    HudLabel("sentence ${index + 1}" + if (prompts[index] in done) " · recorded" else "", color = if (prompts[index] in done) Jx.Mint else Jx.TextFaint, size = 10)
+                    Spacer(Modifier.height(10.dp))
+                    Text(prompts[index], color = Jx.Text, fontSize = 26.sp, lineHeight = 34.sp, fontWeight = FontWeight.Medium)
+                }
+                Text(status, color = if (waiting) Jx.Mint else Jx.TextDim, fontSize = 14.sp)
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        val canRecord = !waiting && state == AssistantState.IDLE
+                        if (waiting) {
+                            JarvisOrb(state = AssistantState.LISTENING, micLevel = micLevel, size = 150.dp)
+                        } else {
+                            RingButton(
+                                onClick = {
+                                    if (!canRecord) return@RingButton
+                                    waiting = true
+                                    status = "Listening… read it now."
+                                    JarvisService.requestEnroll(this@VoiceTrainingActivity, prompts[index])
+                                },
+                                size = 88.dp, color = if (canRecord) Jx.Mint else Jx.TextFaint, filled = canRecord,
+                            ) { Glyph(GlyphKind.MIC, Color.White, 36.dp) }
+                            Spacer(Modifier.height(8.dp))
+                            HudLabel(if (canRecord) "tap to record" else "jarvis is busy", color = Jx.TextDim, size = 10)
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        PillButton("Skip  ›", onClick = { index = nextUnrecorded(index); status = "Skipped." }, enabled = !waiting)
                     }
                 }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Also keep recordings of my requests", color = Color(0xFF94A3B8), fontSize = 13.sp, modifier = Modifier.weight(1f))
-                    Switch(checked = keepTurns, onCheckedChange = {
-                        keepTurns = it
-                        JarvisService.setSaveVoiceSamplesEnabled(this@VoiceTrainingActivity, it)
-                    })
+                Spacer(Modifier.weight(1f))
+                GlassPanel(Modifier.fillMaxWidth(), brackets = false, padding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Also keep recordings of my requests", color = Jx.Text, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Switch(checked = keepTurns, onCheckedChange = {
+                            keepTurns = it
+                            JarvisService.setSaveVoiceSamplesEnabled(this@VoiceTrainingActivity, it)
+                        }, colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = Jx.Blue, checkedThumbColor = Color.White))
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Recordings stay on this phone in ${JarvisService.VOICE_SAMPLES_DIR}. To train, connect the phone " +
+                            "to the laptop and run tools/voice-train/train.sh; it installs the improved recogniser here.",
+                        color = Jx.TextFaint,
+                        fontSize = 12.sp,
+                    )
                 }
-                Text(
-                    "Recordings stay on this phone in ${JarvisService.VOICE_SAMPLES_DIR}. To train, connect the phone " +
-                        "to the laptop and run tools/voice-train/train.sh; it installs the improved recogniser here.",
-                    color = Color(0xFF64748B),
-                    fontSize = 12.sp,
-                )
+            }
             }
         }
     }
