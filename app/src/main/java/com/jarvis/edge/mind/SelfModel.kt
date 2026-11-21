@@ -22,6 +22,7 @@ class SelfModel(
     private val nearProximityProvider: () -> Boolean = { false },
     private val lastMotionMsProvider: () -> Long = { 0L },
     private val lastReflectionMsProvider: () -> Long = { 0L },
+    private val recoveredAtMsProvider: () -> Long? = { null },
     private val uptimeMsProvider: () -> Long = {
         runCatching { SystemClock.elapsedRealtime() }.getOrDefault(0L)
     },
@@ -65,6 +66,7 @@ class SelfModel(
             nearProximity = runCatching { nearProximityProvider() }.getOrDefault(false),
             lastMotionMs = runCatching { lastMotionMsProvider() }.getOrDefault(0L),
             learningPaused = paused,
+            recoveredAtMs = runCatching { recoveredAtMsProvider() }.getOrNull(),
         )
     }
 
@@ -140,15 +142,20 @@ class SelfModel(
     }
 
     companion object {
+        private const val RECOVERY_NOTE_MS = 10L * 60_000L
+
         /**
          * Compact one-line summary for LLM system prompt injection (strictly <= 120 chars).
          */
-        fun toPromptLine(s: SelfStateSnapshot): String {
+        fun toPromptLine(s: SelfStateSnapshot, nowMs: Long = System.currentTimeMillis()): String {
             val chg = if (s.charging) "+" else ""
             val line = "Self: bat=${s.batteryPct}%$chg ${s.batteryTempC.toInt()}C " +
                 "ram=${s.availRamMb}/${s.totalRamMb}MB ${s.healthLevelName} " +
                 "facts=${s.factCount} vocab=${s.vocabCount}"
-            return if (line.length <= 120) line else line.substring(0, 120)
+            val recovered = s.recoveredAtMs?.let { nowMs - it in 0 until RECOVERY_NOTE_MS } == true
+            if (!recovered) return if (line.length <= 120) line else line.substring(0, 120)
+            val suffix = " recovered from unexpected shutdown"
+            return line.take(120 - suffix.length) + suffix
         }
 
         /**

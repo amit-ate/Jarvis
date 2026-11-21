@@ -179,4 +179,5 @@ data class SelfStateSnapshot(
     val nearProximity: Boolean = false,
     val lastMotionMs: Long = 0L,
     val learningPaused: Boolean = false,
+    val recoveredAtMs: Long? = null,
 )

@@ -62,6 +62,8 @@ interface MindRepository {
 
     fun recordReflectionJournal(summary: String): JournalEntry
 
+    fun recordRecoveryJournal(summary: String): JournalEntry
+
     fun undoJournalEntry(journalId: Long): Boolean
     fun undoLastLearning(): JournalEntry?
     fun forgetMatchingFact(query: String, queryEmbedding: FloatArray): Fact?
@@ -542,6 +544,19 @@ class InMemoryMindStore(
             type = "reflection",
             summary = summary,
             targetTable = "episodes",
+            targetId = 0L,
+            createdAtMs = clockMs(),
+        )
+        journal.add(entry)
+        entry
+    }
+
+    override fun recordRecoveryJournal(summary: String): JournalEntry = synchronized(lock) {
+        val entry = JournalEntry(
+            id = nextId++,
+            type = "recovery",
+            summary = summary,
+            targetTable = "meta",
             targetId = 0L,
             createdAtMs = clockMs(),
         )
@@ -1391,6 +1406,13 @@ class SqliteMindStore(
         val now = clockMs()
         val id = insertJournalTx(db, "reflection", summary, "episodes", 0L, now)
         return JournalEntry(id, "reflection", summary, "episodes", 0L, now, false)
+    }
+
+    override fun recordRecoveryJournal(summary: String): JournalEntry {
+        val db = writableDatabase
+        val now = clockMs()
+        val id = insertJournalTx(db, "recovery", summary, "meta", 0L, now)
+        return JournalEntry(id, "recovery", summary, "meta", 0L, now, false)
     }
 
     override fun undoJournalEntry(journalId: Long): Boolean {
