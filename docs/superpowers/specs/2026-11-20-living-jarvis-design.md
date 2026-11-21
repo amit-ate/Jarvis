@@ -43,7 +43,7 @@ We are not claiming real consciousness. "Conscious" here means a set of behaviou
 
 - CPU only. 4× Cortex-A73 big cores via the existing pinned llama.cpp threadpool. Adreno 509 and Hexagon 680 have no usable LLM path.
 - Speed gate: `tg64 ≥ 7 t/s` and `pp256 ≥ 25 t/s`. Only `qwen2.5-0.5b-instruct-q4_0` passes today (18 t/s generation).
-- Thermal throttling set point is 60 °C. `HealthGuard` already has the NORMAL/WARM/HOT levels.
+- Two different temperatures matter. The phone's own thermal engine throttles the CPU cluster at 60 °C. `HealthGuard` reads the battery temperature, which runs much cooler, and moves to WARM at 40 °C and HOT at 45 °C.
 - RAM: about 5.6 GB usable. The speech stack, LLM, VLM (loaded on demand) and new embedding model must fit together.
 - Existing stack: Kotlin and Compose, sherpa-onnx (VAD, KWS, Zipformer, Moonshine, Piper TTS), llama.cpp via JNI with GBNF grammars, SQLite.
 - Verified in the repo: the sherpa `OnlineRecognizerConfig` supports `hotwordsFile` and `hotwordsScore`. The vendored llama.cpp has `examples/training/finetune.cpp` (full-parameter training via `llama_opt`); LoRA *training* is **not** present, only LoRA loading.

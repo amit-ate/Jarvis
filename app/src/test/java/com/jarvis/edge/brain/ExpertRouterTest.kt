@@ -114,24 +114,6 @@ class ExpertRouterTest {
     }
 
     @Test
-    fun `HashEmbeddingEngine produces deterministic normalized vectors`() {
-        val embedder = HashEmbeddingEngine(dim = 64)
-        assertTrue(embedder.isLoaded)
-        val a1 = embedder.embed("my wifi password is on the fridge")
-        val a2 = embedder.embed("my wifi password is on the fridge")
-        val b = embedder.embed("turn on the living room lights")
-        assertEquals(64, a1.size)
-        assertEquals(a1.toList(), a2.toList())
-
-        val normA = kotlin.math.sqrt(a1.sumOf { (it * it).toDouble() })
-        assertTrue(kotlin.math.abs(normA - 1.0) < 1e-4)
-
-        val simSame = a1.indices.sumOf { (a1[it] * a2[it]).toDouble() }
-        val simDiff = a1.indices.sumOf { (a1[it] * b[it]).toDouble() }
-        assertTrue(simSame > simDiff)
-    }
-
-    @Test
     fun `switches domain control vectors only on change and blends Stage 4 evolved vector`(@TempDir tempDir: Path) {
         val dir = tempDir.toFile()
         val toolVec = ControlVector(

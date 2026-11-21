@@ -68,7 +68,9 @@ class ModelPaths(
 
     companion object {
         const val DEFAULT_ROOT = "/sdcard/Jarvis/models"
-        const val DEFAULT_LLM_MODEL = "qwen2.5-0.5b-instruct-q4_0.gguf"
+        const val DEFAULT_LLM_MODEL = "google_gemma-3-1b-it-Q4_0.gguf"
+        /** Smaller fallback chat model, used when the default is not on the phone. */
+        const val FALLBACK_LLM_MODEL = "qwen2.5-0.5b-instruct-q4_0.gguf"
         /** Optional one-line file naming the chat model to load from llm/ (lets a bigger model be swapped in without a rebuild). */
         const val ACTIVE_MODEL_FILE = "llm/active_model.txt"
 
@@ -77,7 +79,7 @@ class ModelPaths(
          * on harder questions vs 16/20 for Qwen2.5-0.5B, first word in ~1.5-3 s once warm; Qwen2.5-1.5B answered as
          * well but took 4-14 s to start, too slow for voice.
          */
-        val PREFERRED_LLM_MODELS = listOf("google_gemma-3-1b-it-Q4_0.gguf", DEFAULT_LLM_MODEL)
+        val PREFERRED_LLM_MODELS = listOf(DEFAULT_LLM_MODEL, FALLBACK_LLM_MODEL)
 
         /**
          * Accurate recognisers in order of preference: a model fine-tuned on the user's voice (tools/voice-train), then

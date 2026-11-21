@@ -42,7 +42,7 @@ These are my calls, not things you agreed to. Each one is here so you can overru
 - The chat model stays loaded with its cached system prompt. It is unloaded only when available memory drops below 900 MB.
 - Audio capture is 16 kHz, mono, `PCM_16_BIT`, source `VOICE_RECOGNITION`.
 - The camera stays closed unless a vision tool is running.
-- No network calls at runtime.
+- Everything works without a network. The only network calls are the online lookup tools in `tools/OnlineTools.kt`, used when a question needs current facts; if they fail or there is no connection, Jarvis answers from the on-phone model.
 - Latency targets, measured from the moment the speaker actually stops talking (so the silence wait counts) to first audio out: fast path 1.0 s or less; model path 3.5 s or less.
 - Package name `com.jarvis.edge`. All `adb` commands pass `-s <serial>`.
 

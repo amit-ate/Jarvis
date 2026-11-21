@@ -61,7 +61,7 @@ data class ResourceStatusUi(
     val totalRamMb: Long = 0,
     val littleCpuMhz: Int = 0,
     val bigCpuMhz: Int = 0,
-    val activeModel: String = "qwen2.5-0.5b-instruct-q4_0",
+    val activeModel: String = "google_gemma-3-1b-it-Q4_0",
     val activeExperts: List<String> = emptyList(),
     val lux: Float = 0f,
     val nearProximity: Boolean = false,

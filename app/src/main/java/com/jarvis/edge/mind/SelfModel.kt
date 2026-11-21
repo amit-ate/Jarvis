@@ -16,7 +16,7 @@ import java.io.File
 class SelfModel(
     private val context: Context? = null,
     private val store: MindRepository? = null,
-    private val activeModelProvider: () -> String = { "qwen2.5-0.5b-instruct-q4_0" },
+    private val activeModelProvider: () -> String = { "google_gemma-3-1b-it-Q4_0" },
     private val activeExpertsProvider: () -> List<String> = { emptyList() },
     private val luxProvider: () -> Float = { 0f },
     private val nearProximityProvider: () -> Boolean = { false },
@@ -53,7 +53,7 @@ class SelfModel(
             totalRamMb = ram.second,
             littleFreqMhz = littleMhz,
             bigFreqMhz = bigMhz,
-            activeModel = runCatching { activeModelProvider() }.getOrDefault("qwen2.5-0.5b-instruct-q4_0"),
+            activeModel = runCatching { activeModelProvider() }.getOrDefault("google_gemma-3-1b-it-Q4_0"),
             activeExperts = runCatching { activeExpertsProvider() }.getOrDefault(emptyList()),
             factCount = facts,
             vocabCount = vocab,
