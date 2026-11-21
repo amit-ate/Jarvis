@@ -38,6 +38,7 @@ class SetupActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.navigationBarColor = android.graphics.Color.parseColor("#02040A")
         val baseJson = assets.open("ir/codes.json").bufferedReader().use { it.readText() }
         val catalog = IrCodes(baseJson)
         val irManager = getSystemService(CONSUMER_IR_SERVICE) as? ConsumerIrManager
