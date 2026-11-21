@@ -40,4 +40,35 @@ class ChatLogTest {
         repeat(5) { log.addUser("q$it") }
         assertEquals(listOf("q2", "q3", "q4"), log.messages.value.map { it.text })
     }
+
+    @Test
+    fun restoreUndoesAClearAndKeepsNewerMessages() {
+        val log = ChatLog(null)
+        log.addUser("one")
+        log.addReplyChunk("first answer")
+        val before = log.messages.value
+        log.clear()
+        log.addUser("two")
+        log.restore(before)
+        org.junit.jupiter.api.Assertions.assertEquals(listOf("one", "first answer", "two"), log.messages.value.map { it.text })
+        org.junit.jupiter.api.Assertions.assertEquals(3, log.messages.value.map { it.id }.toSet().size)
+    }
+
+    @Test
+    fun clearedHistoryCanBeRestoredFromTheBackupFile(@TempDir dir: File) {
+        val f = File(dir, "chat.jsonl")
+        val log = ChatLog(f)
+        log.addUser("hello")
+        log.addReplyChunk("hi there")
+        log.clear()
+        assertTrue(log.hasBackup())
+        log.addUser("after")
+        // A fresh instance (as after an app restart) still finds the backup.
+        val again = ChatLog(f)
+        assertTrue(again.restoreBackup())
+        assertEquals(listOf("hello", "hi there", "after"), again.messages.value.map { it.text })
+        assertEquals(listOf(1L, 2L, 3L), again.messages.value.map { it.id })
+        assertTrue(!again.hasBackup())
+        assertEquals(3, ChatLog(f).messages.value.size)
+    }
 }

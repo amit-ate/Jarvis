@@ -61,6 +61,8 @@ fun JarvisOrb(
     modifier: Modifier = Modifier,
     searching: Boolean = false,
     size: Dp = 280.dp,
+    /** Hot phone, battery saver or night: draw a still frame and keep only state colours, sparing the CPU and battery. */
+    calm: Boolean = false,
 ) {
     val color by animateColorAsState(Jx.stateColor(state, searching), tween(450), label = "orbColor")
     val energy by animateFloatAsState(
@@ -82,11 +84,14 @@ fun JarvisOrb(
         tick++
     }
 
-    val t = rememberInfiniteTransition(label = "reactor")
-    val slow by t.animateFloat(0f, 360f, infiniteRepeatable(tween(48_000, easing = LinearEasing)), label = "slow")
-    val mid by t.animateFloat(360f, 0f, infiniteRepeatable(tween(14_000, easing = LinearEasing)), label = "mid")
-    val fast by t.animateFloat(0f, 360f, infiniteRepeatable(tween(1_600, easing = LinearEasing)), label = "fast")
-    val breath by t.animateFloat(0f, 1f, infiniteRepeatable(tween(2_600), RepeatMode.Reverse), label = "breath")
+    var slow = 0f; var mid = 0f; var fast = 0f; var breath = 0.5f
+    if (!calm) {
+        val t = rememberInfiniteTransition(label = "reactor")
+        slow = t.animateFloat(0f, 360f, infiniteRepeatable(tween(48_000, easing = LinearEasing)), label = "slow").value
+        mid = t.animateFloat(360f, 0f, infiniteRepeatable(tween(14_000, easing = LinearEasing)), label = "mid").value
+        fast = t.animateFloat(0f, 360f, infiniteRepeatable(tween(1_600, easing = LinearEasing)), label = "fast").value
+        breath = t.animateFloat(0f, 1f, infiniteRepeatable(tween(2_600), RepeatMode.Reverse), label = "breath").value
+    }
 
     Canvas(modifier.size(size)) {
         @Suppress("UNUSED_EXPRESSION") tick

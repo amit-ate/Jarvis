@@ -1,5 +1,6 @@
 package com.jarvis.edge.hud
 
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -262,6 +263,24 @@ private fun MindHeader(
 @Composable
 private fun JournalTab(items: List<JournalItemUi>) {
     val sorted = remember(items) { items.sortedByDescending { it.timestampMs } }
+    // Safety net: undoing forgets what Jarvis learned, so ask first.
+    var confirm by remember { mutableStateOf<JournalItemUi?>(null) }
+    confirm?.let { item ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirm = null },
+            containerColor = Jx.PanelHi,
+            title = { Text("Undo this?", color = TextPrimary) },
+            text = { Text(item.summary, color = TextSecondary, fontSize = 14.sp) },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { MindUiBridge.undoJournal(item.id); confirm = null }) {
+                    Text("Undo", color = CoralAlert, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { confirm = null }) { Text("Keep", color = CyanAccent) }
+            },
+        )
+    }
     if (sorted.isEmpty()) {
         EmptyStateCard(
             title = "No journal events yet",
@@ -299,7 +318,7 @@ private fun JournalTab(items: List<JournalItemUi>) {
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.clip(RoundedCornerShape(8.dp))
-                                    .clickable { MindUiBridge.undoJournal(item.id) }
+                                    .clickable { confirm = item }
                                     .padding(horizontal = 8.dp, vertical = 4.dp),
                             )
                         }

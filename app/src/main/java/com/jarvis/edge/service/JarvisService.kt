@@ -1649,6 +1649,11 @@ class JarvisService : Service() {
             }
         }
 
+        /** Safety net for the camera fill light: the HUD calls this if the white screen is left on too long. */
+        fun clearScreenFill() {
+            _screenFillWhite.value = false
+        }
+
         fun requestStopSpeaking(context: Context) {
             context.startService(Intent(context, JarvisService::class.java).apply { action = ACTION_STOP_SPEAKING })
         }

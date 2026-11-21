@@ -18,6 +18,9 @@
     <uses-feature android:name="android.hardware.consumerir" android:required="false" />
 
     <application
+        android:name=".JarvisApp"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
         android:label="Jarvis"
         android:largeHeap="true"

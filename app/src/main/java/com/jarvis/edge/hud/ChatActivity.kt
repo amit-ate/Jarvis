@@ -88,6 +88,13 @@ class ChatActivity : ComponentActivity() {
                 val voices = remember { Voices.available(File(ModelPaths.DEFAULT_ROOT)) }
                 var voiceId by remember { mutableStateOf(JarvisService.currentVoiceId(this@ChatActivity)) }
                 var showOptions by remember { mutableStateOf(false) }
+                // Safety net: clearing keeps the old messages for a few seconds so it can be undone.
+                var undoClear by remember { mutableStateOf<List<ChatMessage>?>(null) }
+                LaunchedEffect(undoClear) { if (undoClear != null) { kotlinx.coroutines.delay(10_000); undoClear = null } }
+                var hasBackup by remember { mutableStateOf(log.hasBackup()) }
+                var notice by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(notice) { if (notice != null) { kotlinx.coroutines.delay(3_000); notice = null } }
+                val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
                 val listState = rememberLazyListState()
                 val busy = state == AssistantState.THINKING || searching
                 // The list is laid out bottom-up, so item 0 is the newest and stays in view when the keyboard opens.
@@ -95,8 +102,14 @@ class ChatActivity : ComponentActivity() {
                     if (messages.isNotEmpty() || busy) listState.animateScrollToItem(0)
                 }
                 fun send(text: String = input) {
-                    val t = text.trim()
+                    val t = text.trim().take(MAX_INPUT)
                     if (t.isEmpty()) return
+                    // Safety net: one request at a time; the text stays in the box instead of being lost.
+                    if (busy || state == AssistantState.LISTENING) {
+                        notice = "Jarvis is still answering. Send again in a moment."
+                        return
+                    }
+                    haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                     JarvisService.submitText(this@ChatActivity, t, speakReplies)
                     input = ""
                 }
@@ -113,7 +126,13 @@ class ChatActivity : ComponentActivity() {
                         RingButton(onClick = { showOptions = !showOptions }, size = 40.dp, color = if (showOptions) Jx.Cyan else Jx.TextDim, filled = showOptions) {
                             Glyph(GlyphKind.GEAR, if (showOptions) Color.White else Jx.TextDim, 18.dp)
                         }
-                        RingButton(onClick = { log.clear() }, size = 40.dp, color = Jx.TextDim) { Glyph(GlyphKind.TRASH, Jx.TextDim, 18.dp) }
+                        RingButton(onClick = {
+                            if (messages.isNotEmpty()) {
+                                undoClear = messages
+                                log.clear()
+                                hasBackup = log.hasBackup()
+                            }
+                        }, size = 40.dp, color = Jx.TextDim) { Glyph(GlyphKind.TRASH, Jx.TextDim, 18.dp) }
                     }
 
                     AnimatedVisibility(showOptions, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
@@ -139,6 +158,13 @@ class ChatActivity : ComponentActivity() {
                                     }
                                 }
                             }
+                            if (hasBackup && undoClear == null) {
+                                Spacer(Modifier.height(10.dp))
+                                PillButton("Restore last cleared chat", onClick = {
+                                    log.restoreBackup()
+                                    hasBackup = log.hasBackup()
+                                }, color = Jx.Amber)
+                            }
                             Spacer(Modifier.height(10.dp))
                             PillButton("Train Jarvis on my voice  ›", onClick = {
                                 startActivity(android.content.Intent(this@ChatActivity, VoiceTrainingActivity::class.java))
@@ -161,6 +187,25 @@ class ChatActivity : ComponentActivity() {
                         }
                     }
 
+                    AnimatedVisibility(undoClear != null || notice != null, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(14.dp)).background(Jx.PanelHi)
+                                .border(1.dp, Jx.LineHi, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(notice ?: "Conversation cleared", color = Jx.Text, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                            if (notice == null) {
+                                PillButton("Undo", onClick = {
+                                    if (!log.restoreBackup()) undoClear?.let { log.restore(it) }
+                                    undoClear = null
+                                    hasBackup = log.hasBackup()
+                                }, color = Jx.Amber, selected = true)
+                            }
+                        }
+                    }
+                    if (input.length > MAX_INPUT - 100) {
+                        HudLabel("${input.length} / $MAX_INPUT", color = if (input.length >= MAX_INPUT) Jx.Amber else Jx.TextFaint, size = 9, modifier = Modifier.padding(start = 18.dp, bottom = 4.dp))
+                    }
                     // Composer.
                     Row(
                         Modifier
@@ -177,7 +222,7 @@ class ChatActivity : ComponentActivity() {
                                 value = input,
                                 onValueChange = {
                                     // Enter sends (hardware keys and keyboards that ignore the Send action).
-                                    if (it.endsWith("\n")) { input = it.trimEnd('\n'); send() } else input = it
+                                    if (it.endsWith("\n")) { input = it.trimEnd('\n'); send() } else input = it.take(MAX_INPUT)
                                 },
                                 textStyle = TextStyle(color = Jx.Text, fontSize = 16.sp),
                                 cursorBrush = SolidColor(Jx.Cyan),
@@ -213,6 +258,9 @@ class ChatActivity : ComponentActivity() {
         else -> null
     }
 }
+
+/** Long pastes would overflow the model's context; anything past this is cut. */
+private const val MAX_INPUT = 600
 
 private val SUGGESTIONS = listOf(
     "What's the weather tomorrow?",

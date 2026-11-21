@@ -18,6 +18,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -115,8 +116,33 @@ class HudActivity : ComponentActivity(), SensorEventListener {
                 window.attributes = lp
             }
 
+            // Safety net: the camera fill light never stays on for more than 10 seconds.
+            LaunchedEffect(fillWhite) {
+                if (fillWhite) { delay(10_000L); JarvisService.clearScreenFill() }
+            }
+            // Safety net: notice a start-up that hangs.
+            var bootStartedAt by remember { mutableStateOf(0L) }
+            var now by remember { mutableStateOf(System.currentTimeMillis()) }
+            LaunchedEffect(Unit) { while (true) { delay(5_000L); now = System.currentTimeMillis() } }
+            LaunchedEffect(message) { if (message.startsWith("Starting")) bootStartedAt = System.currentTimeMillis() }
+
+            val res = mindState.resources
+            val hot = !res.healthLevel.equals("NORMAL", true)
+            val night = lux <= 3f
+            val lowBattery = res.batteryPct in 1..14 && !res.charging
+            val calm = hot || powerSave.value || lowBattery || (night && state == AssistantState.IDLE)
+            val alert: HudAlert? = when {
+                !micGranted.value -> HudAlert.MicDenied()
+                state == AssistantState.ERROR -> HudAlert.Error(message)
+                message.startsWith("Starting") && bootStartedAt > 0 && now - bootStartedAt > 180_000L -> HudAlert.SlowStart()
+                crash.value != null -> HudAlert.Crashed(crash.value!!)
+                isDegradedStatus(message) -> HudAlert.Degraded(message)
+                hot -> HudAlert.Hot(res.healthLevel)
+                else -> null
+            }
+
             if (fillWhite) {
-                Box(Modifier.fillMaxSize().background(Color.White))
+                Box(Modifier.fillMaxSize().background(Color.White).clickable { JarvisService.clearScreenFill() })
             } else {
                 JarvisTheme {
                     HomeHud(
@@ -124,12 +150,26 @@ class HudActivity : ComponentActivity(), SensorEventListener {
                         searching = searching,
                         micLevel = micLevel,
                         transcript = transcript,
-                        reply = reply.ifBlank { message },
+                        reply = reply,
+                        status = message,
                         clockText = clockText,
                         expert = activeExpert,
-                        health = mindState.resources.healthLevel.toString(),
+                        health = res.healthLevel,
                         factCount = mindState.facts.size,
-                        battery = mindState.resources.batteryPct,
+                        battery = res.batteryPct,
+                        night = night,
+                        calm = calm,
+                        alert = alert,
+                        onAlertAction = { a ->
+                            when (a) {
+                                is HudAlert.MicDenied -> startActivity(
+                                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + packageName)),
+                                )
+                                is HudAlert.Crashed -> { crashLog.dismiss(); crash.value = null }
+                                is HudAlert.Error, is HudAlert.SlowStart -> restartJarvis()
+                                else -> Unit
+                            }
+                        },
                         onOrbTap = {
                             if (state == AssistantState.SPEAKING) JarvisService.requestStopSpeaking(this@HudActivity)
                             else if (state == AssistantState.IDLE) JarvisService.requestManualWake(this@HudActivity)
@@ -143,8 +183,26 @@ class HudActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
+    private val crashLog by lazy { com.jarvis.edge.core.CrashLog(java.io.File(filesDir, com.jarvis.edge.core.CrashLog.FILE_NAME)) }
+    private val crash = mutableStateOf<com.jarvis.edge.core.CrashInfo?>(null)
+    private val micGranted = mutableStateOf(true)
+    private val powerSave = mutableStateOf(false)
+
+    /** Stops and starts the service: the fix offered when Jarvis is stuck or in an error state. */
+    private fun restartJarvis() {
+        stopService(Intent(this, JarvisService::class.java))
+        window.decorView.postDelayed({ startJarvisService() }, 1_500L)
+    }
+
+    private fun refreshSafetyState() {
+        micGranted.value = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        powerSave.value = (getSystemService(POWER_SERVICE) as? android.os.PowerManager)?.isPowerSaveMode == true
+        crash.value = crashLog.latest()
+    }
+
     override fun onResume() {
         super.onResume()
+        refreshSafetyState()
         applyImmersiveUi()
         lightSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
         proxSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }

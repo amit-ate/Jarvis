@@ -67,13 +67,57 @@ class ChatLog(
         }
     }
 
+    /** Puts back messages taken before a [clear], for "undo". Messages added since are kept after them. */
+    fun restore(previous: List<ChatMessage>) {
+        if (previous.isEmpty()) return
+        synchronized(lock) {
+            val known = previous.map { it.id }.toSet()
+            val merged = (previous + _messages.value.filter { it.id !in known }).takeLast(maxMessages)
+            _messages.value = merged
+            nextId = maxOf(nextId, (merged.maxOfOrNull { it.id } ?: 0L) + 1)
+            save()
+        }
+    }
+
+    /** Empties the chat. The old history is kept as a backup file until the next clear, so it can be restored. */
     fun clear() {
         synchronized(lock) {
             _messages.value = emptyList()
             replyOpen = false
-            runCatching { file?.delete() }
+            val f = file ?: return
+            runCatching {
+                val bak = backupFile(f)
+                if (f.isFile) {
+                    bak.delete()
+                    if (!f.renameTo(bak)) { f.copyTo(bak, overwrite = true); f.delete() }
+                }
+            }
         }
     }
+
+    /** True when a cleared conversation can still be brought back. */
+    fun hasBackup(): Boolean = file?.let { backupFile(it).isFile } == true
+
+    /** Brings back the conversation removed by the last [clear], ahead of anything said since. */
+    fun restoreBackup(): Boolean {
+        val f = file ?: return false
+        val bak = backupFile(f)
+        if (!bak.isFile) return false
+        val old = runCatching { bak.readLines().mapNotNull(::parse) }.getOrDefault(emptyList())
+        if (old.isEmpty()) return false
+        synchronized(lock) {
+            // Renumber so the restored messages can't collide with ones added after the clear.
+            val now = _messages.value
+            val renumbered = (old + now).mapIndexed { i, m -> m.copy(id = i + 1L) }.takeLast(maxMessages)
+            _messages.value = renumbered
+            nextId = renumbered.size + 1L
+            save()
+        }
+        runCatching { bak.delete() }
+        return true
+    }
+
+    private fun backupFile(f: File) = File(f.parentFile, f.name + ".bak")
 
     private fun append(m: ChatMessage) {
         _messages.value = (_messages.value + m).takeLast(maxMessages)
