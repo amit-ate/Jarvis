@@ -268,7 +268,10 @@ class Brain(
         // Every sentence is checked before it is spoken: an echo of the user or a repeat of an earlier reply is
         // rejected; for a factual question, a low-confidence first sentence (a guess) is replaced by an honest
         // "not sure", and a low-confidence later sentence ends the reply.
-        val factual = EchoGuard.looksLikeFactualQuestion(userText) && !CHITCHAT.containsMatchIn(userText.trim()) &&
+        // A follow-up like "and the second tallest" leans on a factual question before it, so it is one too.
+        val followsFact = ELLIPTICAL_FOLLOW_UP.containsMatchIn(userText.trim()) &&
+            turns.lastOrNull()?.user?.let(EchoGuard::looksLikeFactualQuestion) == true
+        val factual = (EchoGuard.looksLikeFactualQuestion(userText) || followsFact) && !CHITCHAT.containsMatchIn(userText.trim()) &&
             !ABOUT_JARVIS.containsMatchIn(userText.trim())
         // With a web lookup to fall back on, a guess is cheaper to replace, so a weaker token is enough to check.
         val canLookUp = offlineNudge == null && heardConfidence >= HEARD_UNSURE && tools.has("web_search")

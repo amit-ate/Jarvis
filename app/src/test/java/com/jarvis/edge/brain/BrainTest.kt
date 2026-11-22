@@ -1100,4 +1100,22 @@ class BrainTest {
         assertTrue("India claimed the victory by 7 runs" in ev, ev)
         assertTrue(ev.length <= 420, ev)
     }
+
+    @Test
+    fun `a follow-up to a factual question is checked like one`() = runBlocking {
+        // "and the second tallest" after "what is the tallest mountain" was answered "Kangchenjunga" without a lookup.
+        val now = 10_000_000L
+        val fakeLlm = FakeLlm(logProbFor = { if (it.contains("Kangchen")) lp(0.2) else lp(0.9) }) { _, prompt, _, onToken ->
+            if ("Web search:" in prompt) onToken("SAY: K2 is the second tallest mountain.")
+            else { onToken("SAY: The second tallest mountain in the world is "); onToken("Kangchenjunga.") }
+        }
+        val queries = mutableListOf<String>()
+        val tools = listOf(fakeSearch(ToolResult("K2", ok = true, feedToModel = "K2 is the second-highest mountain on Earth, after Mount Everest."), queries))
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools), clockMillis = { now })
+        brain.restoreHistory(listOf(Turn("what is the tallest mountain in the world", "SAY: Mount Everest.")), now - 10_000L)
+        val out = mutableListOf<String>()
+        brain.respond("and the second tallest") { out.add(it) }
+        assertEquals(listOf(Brain.LOOKING_UP_MSG, "K2 is the second tallest mountain."), out)
+        assertEquals(listOf("what is the tallest mountain in the world and the second tallest"), queries)
+    }
 }
