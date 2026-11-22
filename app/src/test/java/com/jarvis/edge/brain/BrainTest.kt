@@ -1017,4 +1017,87 @@ class BrainTest {
         assertEquals(listOf("Rabindranath Tagore wrote it."), out)
         assertEquals(1, lookups)
     }
+
+    @Test
+    fun `a curly apostrophe does not make a confident answer look unsure`() = runBlocking {
+        // Gemma sometimes picks "’" where it would rate "'" far likelier; punctuation says nothing about the facts.
+        val fakeLlm = FakeLlm(logProbFor = { if (it == "’") lp(0.001) else lp(0.9) }) { _, _, _, onToken ->
+            onToken("SAY: The sky")
+            onToken("’")
+            onToken("s blue because air scatters blue light.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("Why is the sky blue?") { out.add(it) }
+        assertEquals("The sky’s blue because air scatters blue light.", out.joinToString(" "))
+    }
+
+    @Test
+    fun `an unsure clause finishes its sentence instead of cutting it in half`() = runBlocking {
+        val fakeLlm = FakeLlm(logProbFor = { if (it.contains("zork", ignoreCase = true)) lp(0.01) else lp(0.9) }) { _, _, _, onToken ->
+            onToken("SAY: Cats purr for a variety of reasons,")
+            onToken(" often zork blorp.")
+            onToken(" Zork qux.")
+        }
+        val tools = listOf(simpleTimeTool())
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("tell me a joke") { out.add(it) }
+        assertEquals(listOf("Cats purr for a variety of reasons,", "often zork blorp."), out)
+    }
+
+    @Test
+    fun `a web answer naming something the search text never mentions is not spoken`() = runBlocking {
+        // On the Pad the snippets said the final was "played between South Africa and India" and the model said Australia.
+        val fakeLlm = FakeLlm(logProbFor = { if (it.contains("someone")) lp(0.004) else lp(0.9) }) { _, prompt, _, onToken ->
+            if ("Web search:" in prompt) onToken("SAY: Australia won the 2024 ICC Men’s T20 World Cup final.")
+            else { onToken("SAY: It was won by "); onToken("someone.") }
+        }
+        val evidence = "The 2024 ICC Men's T20 World Cup final was a Twenty20 International cricket match played at " +
+            "Kensington Oval in Bridgetown, Barbados on 29 June 2024. It was played between South Africa and India."
+        val tools = listOf(fakeSearch(ToolResult("The final...", ok = true, feedToModel = evidence)))
+        val brain = Brain(fast = FastIntents, llm = fakeLlm, prompts = PromptBuilder(tools), tools = ToolRegistry(tools))
+        val out = mutableListOf<String>()
+        brain.respond("Who won the 2024 T20 World Cup final?") { out.add(it) }
+        assertEquals(listOf(Brain.LOOKING_UP_MSG, Brain.NOT_FOUND_MSG), out)
+    }
+
+    @Test
+    fun `names and numbers backed by the search text or the question pass the check`() {
+        val brain = Brain(fast = FastIntents, llm = null, prompts = PromptBuilder(emptyList()), tools = ToolRegistry(emptyList()))
+        val ev = "India beat South Africa by 7 runs in Bridgetown on 29 June 2024."
+        assertEquals(null, brain.ungroundedName("India won the final by 7 runs.", "who won the final", ev))
+        assertEquals(null, brain.ungroundedName("The Indian team won it in 2024.", "who won the final", ev))
+        assertEquals("Australia", brain.ungroundedName("Australia won the final.", "who won the final", ev))
+        assertEquals("9", brain.ungroundedName("India won by 9 runs.", "who won the final", ev))
+        assertEquals(null, brain.ungroundedName("It was played in Barbados.", "where was the Barbados final", ev))
+        assertEquals(null, brain.ungroundedName("Rabindranath Tagore wrote it.", "who wrote it", "Tagore wrote Jana Gana Mana"))
+        assertEquals(
+            "Prime Minister Fumio Kishida",
+            brain.ungroundedName("Prime Minister Fumio Kishida.", "who is the prime minister of japan", "The prime minister of Japan is the head of government of Japan."),
+        )
+        assertEquals(null, brain.ungroundedName("The Prime Minister of Japan leads the cabinet.", "who is the prime minister of japan", "It chairs the Cabinet."))
+    }
+
+    @Test
+    fun `evidence keeps the sentences that match the question`() {
+        val brain = Brain(fast = FastIntents, llm = null, prompts = PromptBuilder(emptyList()), tools = ToolRegistry(emptyList()))
+        val text = "Cricket is popular in many countries around the world. | The final was won by India by seven runs. | Tickets sold out fast."
+        assertEquals("The final was won by India by seven runs.", brain.selectEvidence("who won the final", text, maxChars = 60))
+        assertEquals("Short text.", brain.selectEvidence("anything", "Short text.", maxChars = 60))
+    }
+
+    @Test
+    fun `evidence for who won keeps the sentence with the result`() {
+        val brain = Brain(fast = FastIntents, llm = null, prompts = PromptBuilder(emptyList()), tools = ToolRegistry(emptyList()))
+        // What the phone got for "who won the 2024 t20 world cup final": snippets, then the Wikipedia intro.
+        val text = "The 2024 ICC Men's T20 World Cup final was a Twenty20 International (T20I) cricket match played at Kensington Oval in Bridgetown, Barbados on 29 June 2024 to determine the winner of the 2024 ICC Men's T20 World Cup. It was played between South Africa and India. India won the toss and electing to bat first, they registered a score of 176/7. | " +
+            "Live Cricket Scoreboard: Get India vs South Africa Final, cricket scorecard, ICC Men's T20 World Cup 2024 dated June 29, 2024. | " +
+            "The ICC Men's T20 World Cup is a biennial world cup for cricket in Twenty20 International (T20I) format, organised by the International Cricket Council (ICC). It was first played in 2007 in South Africa, and the 2024 tournament marked its ninth edition. The eighth edition, held in 2022 in Australia, was contested by 16 teams, and was won by England who defeated Pakistan in the ... | " +
+            "The 2024 ICC Men's T20 World Cup final was a Twenty20 International (T20I) cricket match played at Kensington Oval in Bridgetown, Barbados on 29 June 2024 to determine the winner of the 2024 ICC Men's T20 World Cup. It was played between South Africa and India. India won the toss and electing to bat first, they registered a score of 176/7. In the second innings, South Africa managed to post a score of 169/8 thus India claimed the victory by 7 runs to win their second T20 World Cup title. Virat Kohli was named Player of the Match for scoring 76 runs off 59 balls."
+        val ev = brain.selectEvidence("search the web for who won the 2024 t20 world cup final", text)
+        assertTrue("India claimed the victory by 7 runs" in ev, ev)
+        assertTrue(ev.length <= 420, ev)
+    }
 }

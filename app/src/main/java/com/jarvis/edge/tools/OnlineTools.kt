@@ -1,6 +1,8 @@
 package com.jarvis.edge.tools
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -91,66 +93,73 @@ class WebSearchTool(
         if (query.isEmpty()) {
             return@withContext ToolResult("Please say what you want me to search for.", ok = false)
         }
-
         val encoded = URLEncoder.encode(query, "UTF-8")
-        val ddgRaw = runCatching {
+        // All three at once: the instant answer, the result snippets, and Wikipedia's opening section. The snippets
+        // often only set the scene ("played between South Africa and India") while the intro states the outcome.
+        val (ddgAnswer, ddgLiteSnippets, wikiIntro) = coroutineScope {
+            val answer = async { ddgInstantAnswer(encoded) }
+            val snippets = async { ddgLiteSnippets(encoded) }
+            val intro = async { wikipediaIntro(encoded) }
+            Triple(answer.await(), snippets.await(), intro.await())
+        }
+        val evidence = (ddgLiteSnippets + listOf(ddgAnswer, wikiIntro.take(MAX_INTRO_CHARS)))
+            .filter { it.isNotBlank() }.joinToString(" | ").ifBlank { null }
+        val spoken = ddgAnswer.ifEmpty { ddgLiteSnippets.firstOrNull().orEmpty() }.ifEmpty { wikiIntro }
+        if (spoken.isEmpty()) {
+            return@withContext ToolResult("Sorry, I couldn't find an online answer for $query.", ok = false)
+        }
+        ToolResult(summarizeForSpeech(spoken), ok = true, feedToModel = evidence)
+    }
+
+    private fun ddgInstantAnswer(encoded: String): String {
+        val raw = runCatching {
             fetcher("https://api.duckduckgo.com/?q=$encoded&format=json&no_html=1&skip_disambig=1")
-        }.onFailure { System.err.println("JarvisWeb: fetch failed: $it") }.getOrNull()
-        val ddgAnswer = ddgRaw?.let { raw ->
-            runCatching {
-                val obj = JSONObject(raw)
-                obj.optString("Answer").ifBlank { obj.optString("AbstractText") }.trim()
-            }.getOrNull()
-        }.orEmpty()
-        // DuckDuckGo Lite result snippets: question-specific text (the instant answer is often just a definition, e.g.
-        // "The prime minister of India is the head of government..." without the name), handed to the model as evidence.
-        val ddgLiteRaw = runCatching {
+        }.onFailure { System.err.println("JarvisWeb: fetch failed: $it") }.getOrNull() ?: return ""
+        return runCatching {
+            val obj = JSONObject(raw)
+            obj.optString("Answer").ifBlank { obj.optString("AbstractText") }.trim()
+        }.getOrNull().orEmpty()
+    }
+
+    // DuckDuckGo Lite result snippets: question-specific text (the instant answer is often just a definition, e.g.
+    // "The prime minister of India is the head of government..." without the name), handed to the model as evidence.
+    private fun ddgLiteSnippets(encoded: String): List<String> {
+        val html = runCatching {
             postFetcher("https://lite.duckduckgo.com/lite/", "q=$encoded")
-        }.onFailure { System.err.println("JarvisWeb: fetch failed: $it") }.getOrNull()
-        val ddgLiteSnippets = ddgLiteRaw?.let { html ->
-            Regex("<td class=[\"']result-snippet[\"']>(.*?)</td>", RegexOption.DOT_MATCHES_ALL).findAll(html).take(3).map { m ->
-                m.groupValues[1].replace(Regex("<.*?>"), "")
-                    .replace("&#x27;", "'")
-                    .replace("&quot;", "\"")
-                    .replace("&amp;", "&")
-                    .replace("&lt;", "<")
-                    .replace("&gt;", ">")
-                    .replace(Regex("\\[[0-9a-zA-Z]+\\]"), "")
-                    .replace(Regex("\\s+"), " ")
-                    .trim()
-            }.filter { it.length > 20 }.toList()
-        }.orEmpty()
-        val evidence = (ddgLiteSnippets + listOf(ddgAnswer).filter { it.isNotEmpty() }).joinToString(" | ").ifBlank { null }
-        if (ddgAnswer.isNotEmpty()) {
-            return@withContext ToolResult(summarizeForSpeech(ddgAnswer), ok = true, feedToModel = evidence)
-        }
-        if (ddgLiteSnippets.isNotEmpty()) {
-            return@withContext ToolResult(summarizeForSpeech(ddgLiteSnippets.first()), ok = true, feedToModel = evidence)
-        }
+        }.onFailure { System.err.println("JarvisWeb: fetch failed: $it") }.getOrNull() ?: return emptyList()
+        return Regex("<td class=[\"']result-snippet[\"']>(.*?)</td>", RegexOption.DOT_MATCHES_ALL).findAll(html).take(3).map { m ->
+            m.groupValues[1].replace(Regex("<.*?>"), "")
+                .replace("&#x27;", "'")
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace(Regex("\\[[0-9a-zA-Z]+\\]"), "")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+        }.filter { it.length > 20 }.toList()
+    }
 
-        val wikiSearchRaw = runCatching {
+    /** The opening section of the best-matching Wikipedia article, as plain text ("" if none). */
+    private fun wikipediaIntro(encoded: String): String {
+        val searchRaw = runCatching {
             fetcher("https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&utf8=&format=json&srlimit=1")
-        }.onFailure { System.err.println("JarvisWeb: fetch failed: $it") }.getOrNull()
-        val topTitle = wikiSearchRaw?.let { raw ->
-            runCatching {
-                val arr = JSONObject(raw).getJSONObject("query").getJSONArray("search")
-                if (arr.length() > 0) arr.getJSONObject(0).optString("title").trim() else ""
-            }.getOrNull()
-        }.orEmpty()
-        if (topTitle.isNotEmpty()) {
-            val titleSlug = URLEncoder.encode(topTitle.replace(' ', '_'), "UTF-8").replace("+", "%20")
-            val summaryRaw = runCatching {
-                fetcher("https://en.wikipedia.org/api/rest_v1/page/summary/$titleSlug")
-            }.onFailure { System.err.println("JarvisWeb: fetch failed: $it") }.getOrNull()
-            val extract = summaryRaw?.let { raw ->
-                runCatching { JSONObject(raw).optString("extract").trim() }.getOrNull()
-            }.orEmpty()
-            if (extract.isNotEmpty()) {
-                return@withContext ToolResult(summarizeForSpeech(extract), ok = true)
-            }
-        }
-
-        ToolResult("Sorry, I couldn't find an online answer for $query.", ok = false)
+        }.onFailure { System.err.println("JarvisWeb: fetch failed: $it") }.getOrNull() ?: return ""
+        val title = runCatching {
+            val arr = JSONObject(searchRaw).getJSONObject("query").getJSONArray("search")
+            if (arr.length() > 0) arr.getJSONObject(0).optString("title").trim() else ""
+        }.getOrNull().orEmpty()
+        if (title.isEmpty()) return ""
+        val introRaw = runCatching {
+            fetcher(
+                "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&redirects=1&format=json&titles=" +
+                    URLEncoder.encode(title, "UTF-8"),
+            )
+        }.onFailure { System.err.println("JarvisWeb: fetch failed: $it") }.getOrNull() ?: return ""
+        return runCatching {
+            val pages = JSONObject(introRaw).getJSONObject("query").getJSONObject("pages")
+            pages.getJSONObject(pages.keys().next()).optString("extract").replace(Regex("\\s+"), " ").trim()
+        }.getOrNull().orEmpty()
     }
 
     private fun summarizeForSpeech(text: String): String {
@@ -164,5 +173,10 @@ class WebSearchTool(
             val space = cut.lastIndexOf(' ')
             (if (space > 120) cut.substring(0, space) else cut) + "..."
         }
+    }
+
+    private companion object {
+        /** Wikipedia intro text handed on: the outcome is usually in the first two paragraphs. */
+        const val MAX_INTRO_CHARS = 1500
     }
 }

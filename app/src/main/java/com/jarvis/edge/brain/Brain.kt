@@ -1,5 +1,7 @@
 package com.jarvis.edge.brain
 
+import kotlin.math.ln
+
 import com.jarvis.edge.core.SentenceSplitter
 import com.jarvis.edge.service.HealthGuard
 import com.jarvis.edge.tools.ToolRegistry
@@ -74,7 +76,8 @@ class Brain(
         val confidence: Confidence = Confidence.NONE,
     )
 
-    private enum class Gate { SPEAK, REJECT, UNSURE, TRUNCATE }
+    /** FINISH: stop after the current sentence (a low-confidence clause never leaves a half sentence hanging). */
+    private enum class Gate { SPEAK, REJECT, UNSURE, TRUNCATE, FINISH }
 
     /**
      * Answers [userText]. [heardConfidence] (0..1) is how sure speech recognition was of the words; it decides
@@ -280,7 +283,8 @@ class Brain(
                 PLACEHOLDER.containsMatchIn(s) -> if (i == 0) Gate.UNSURE else Gate.TRUNCATE
                 // Very low confidence on the opening sentence means the model could not make sense of the input.
                 i == 0 && c.tokens >= 3 && c.score < VERY_UNSURE_SCORE -> Gate.UNSURE
-                i > 0 && (repeat || (factual && c.isUncertain()) || c.score < VERY_UNSURE_SCORE) -> Gate.TRUNCATE
+                i > 0 && repeat -> Gate.TRUNCATE
+                i > 0 && ((factual && c.isUncertain()) || c.score < VERY_UNSURE_SCORE) -> Gate.FINISH
                 else -> Gate.SPEAK
             }
         }
@@ -508,7 +512,9 @@ class Brain(
                     if (cancelledByConsumer.get()) return@generate false
                     settleCurrent()
                     raw.append(piece)
-                    currentLp = engine.lastTokenLogProb
+                    // Punctuation-only pieces don't count: Gemma sometimes picks "’" where it rates "'" far likelier,
+                    // and that near-zero probability made "The sky’" look like a guess and cut the answer.
+                    currentLp = if (piece.any { it.isLetterOrDigit() }) engine.lastTokenLogProb else Float.NaN
                     currentCounted = false
 
                     if (mode == StreamMode.TOOL) {
@@ -592,6 +598,8 @@ class Brain(
         var truncated = false
         val spoken = ArrayList<String>()
         val seen = ArrayList<Confidence>()
+        // Set once an unsure clause arrives mid-sentence: speak on to the end of that sentence, then stop.
+        var finishing = false
         try {
             for ((rawSentence, conf) in sentences) {
                 seen.add(conf)
@@ -600,8 +608,17 @@ class Brain(
                 if (sentence.isEmpty()) continue
                 // Judge the sentence with its "[Name]"-style slots still in place; speak it without brackets.
                 val judged = rawSentence.replace(PROMPT_NOTE, " ").replace(UNCLOSED_NOTE, " ").trim()
-                val decision = gate?.invoke(index, judged, conf) ?: Gate.SPEAK
+                var decision = if (finishing) Gate.SPEAK else gate?.invoke(index, judged, conf) ?: Gate.SPEAK
                 index++
+                if (decision == Gate.FINISH) {
+                    if (spoken.isNotEmpty() && !endsSentence(spoken.last())) {
+                        log("sentence ${index - 1} finishes the sentence, then stops: \"${sentence.take(80)}\" (${conf.describe()})")
+                        finishing = true
+                        decision = Gate.SPEAK
+                    } else {
+                        decision = Gate.TRUNCATE
+                    }
+                }
                 if (decision != Gate.SPEAK) {
                     when (decision) {
                         Gate.REJECT -> abortedForEcho = true
@@ -615,6 +632,11 @@ class Brain(
                 spokeAnything = true
                 spoken.add(sentence)
                 onSentence(sentence)
+                if (finishing && endsSentence(sentence)) {
+                    truncated = true
+                    cancelledByConsumer.set(true)
+                    break
+                }
             }
         } catch (ce: CancellationException) {
             cancelledByConsumer.set(true)
@@ -748,9 +770,10 @@ class Brain(
         turns: List<Turn>,
         onSentence: suspend (String) -> Unit,
     ): String {
-        val evidence = (result.feedToModel ?: result.spoken).replace(Regex("\\s+"), " ").take(MAX_EVIDENCE_CHARS)
+        val question = searchQuery(userText, turns)
+        val evidence = selectEvidence(question, result.feedToModel ?: result.spoken)
         log("web evidence: \"${evidence.take(200)}\"")
-        if (!evidenceIsRelevant(searchQuery(userText, turns), evidence)) {
+        if (!evidenceIsRelevant(question, evidence)) {
             // A pop-song article for an anthem question was turned into "It was first sung in 1987".
             log("web evidence is off-topic; not answering from it")
             onSentence(NOT_FOUND_MSG)
@@ -761,25 +784,122 @@ class Brain(
             return result.spoken
         }
         lastGroundedSent = prompts.userPayload(userText, memoryContext = "Web search: $evidence")
-        return streamSayResponse(
+        // The small model fills gaps with guesses ("Australia won" from snippets that never name the winner), so every
+        // name or number it says must appear in the search text or the question.
+        val run = streamSayOrCollectTool(
+            engine = llm,
             prompt = prompts.prompt(history = turns, user = userText, memoryContext = "Web search: $evidence"),
             grammar = prompts.sayOnlyGrammar(),
             maxTokens = replyMaxTokens(),
             sampling = SamplingConfig(temperature = 0.2f, repeatPenalty = 1.1f),
-            fallback = result.spoken,
+            gate = { i, s, _ ->
+                // Only answers that are a name, place, date or number: "why" answers may rightly add a term
+                // ("Rayleigh scattering") the snippet doesn't use.
+                val madeUp = if (ASKS_FOR_NAME.containsMatchIn(userText)) ungroundedName(s, question, evidence) else null
+                if (madeUp == null) {
+                    Gate.SPEAK
+                } else {
+                    log("web answer names \"$madeUp\", which the search text doesn't")
+                    if (i == 0) Gate.REJECT else Gate.TRUNCATE
+                }
+            },
             onSentence = onSentence,
-        ).let(::stripPromptNotes).ifBlank { result.spoken }
+        )
+        if (run.spokeAnything) return run.spokenText
+        if (run.abortedForEcho) {
+            onSentence(NOT_FOUND_MSG)
+            return NOT_FOUND_MSG
+        }
+        val text = (parseModelOutput(run.raw) as? ModelOutput.Say)?.text?.let(::stripPromptNotes).orEmpty()
+        if (text.isNotBlank()) return text
+        onSentence(result.spoken)
+        return result.spoken
+    }
+
+    /**
+     * The sentences of [text] that share the most key words with [query], in their original order, within [maxChars]:
+     * the answer is often in a later snippet, and the first [maxChars] alone cut it off.
+     */
+    internal fun selectEvidence(query: String, text: String, maxChars: Int = MAX_EVIDENCE_CHARS): String {
+        val clean = text.replace(Regex("\\s+"), " ").trim()
+        if (clean.length <= maxChars) return clean
+        val keys = queryKeys(query)
+        val parts = clean.split(Regex("""\s*\|\s*|(?<=[.!?])\s+""")).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val patterns = keys.associateWith { k ->
+            listOf(Regex("\\b" + Regex.escape(k.take(5)))) + KEY_ALIASES[k].orEmpty()
+        }
+        val lower = parts.map { it.lowercase() }
+        fun has(i: Int, k: String) = patterns.getValue(k).any { it.containsMatchIn(lower[i]) }
+        // Words of the question that few sentences share weigh most: "won" picks out the result, while "World Cup"
+        // is in every sentence about the tournament.
+        val weight = keys.associateWith { k ->
+            val df = parts.indices.count { has(it, k) }
+            if (df == 0) 0.0 else ln((parts.size + 1.0) / df)
+        }
+        val score = parts.indices.map { i -> keys.filter { has(i, it) }.sumOf { weight.getValue(it) } }
+        // Per character, so one long sentence that only names the topic doesn't crowd out the answer.
+        val ranked = parts.indices.filter { score[it] > 0 }.sortedByDescending { score[it] / maxOf(parts[it].length, 60) }
+        val chosen = sortedSetOf<Int>()
+        var length = 0
+        for (i in ranked) {
+            val add = parts[i].length + if (chosen.isEmpty()) 0 else 1
+            if (length + add > maxChars) continue
+            chosen += i
+            length += add
+        }
+        return if (chosen.isEmpty()) clean.take(maxChars) else chosen.joinToString(" ") { parts[it] }
+    }
+
+    /**
+     * A name or number in [answer] that neither [evidence] nor [question] contains, or null when all are backed.
+     * Names match by their first five letters, so "Indian" is backed by "India".
+     */
+    internal fun ungroundedName(answer: String, question: String, evidence: String): String? {
+        val asked = question.lowercase().replace('’', '\'')
+        val source = evidence.lowercase().replace('’', '\'')
+        val digits = "$asked $source".replace(",", "")
+        fun inText(word: String, text: String): Boolean {
+            val lower = word.lowercase().replace('’', '\'')
+            return Regex("\\b" + Regex.escape(lower.take(5))).containsMatchIn(text)
+        }
+        // Adjacent capitalised words are one name ("Rabindranath Tagore"): backed if any of its words is.
+        val name = ArrayList<String>()
+        var nameEnd = -1
+        // A name is made up unless it only repeats the question, or a word of it beyond the question is in the search
+        // text: "Prime Minister Fumio Kishida" is not backed by the question's "prime minister".
+        fun nameIsMadeUp(): Boolean {
+            val words = name.filter { it.lowercase().replace('’', '\'') !in COMMON_CAPITALISED }
+            val beyondQuestion = words.filterNot { inText(it, asked) }
+            return beyondQuestion.isNotEmpty() && beyondQuestion.none { inText(it, source) }
+        }
+        for (m in NAME_OR_NUMBER.findAll(answer)) {
+            val word = m.value
+            if (word.first().isDigit()) {
+                if (!Regex("(?<![0-9])" + Regex.escape(word.replace(",", "")) + "(?![0-9])").containsMatchIn(digits)) return word
+                continue
+            }
+            if (name.isNotEmpty() && answer.substring(nameEnd, m.range.first) != " ") {
+                if (nameIsMadeUp()) return name.joinToString(" ")
+                name.clear()
+            }
+            name += word
+            nameEnd = m.range.last + 1
+        }
+        return if (name.isNotEmpty() && nameIsMadeUp()) name.joinToString(" ") else null
     }
 
     /** Search results must share key words with the question, or they answer a different question. */
     internal fun evidenceIsRelevant(query: String, evidence: String): Boolean {
-        val keys = query.lowercase().split(Regex("[^a-z0-9]+")).filter { it.length > 2 && it !in QUERY_STOP_WORDS }.toSet()
+        val keys = queryKeys(query)
         if (keys.isEmpty()) return true
         val text = evidence.lowercase()
         // Stem match ("india" in "indian", "anthem" in "anthems"): first 5 letters at a word start.
         val hits = keys.count { Regex("\\b" + Regex.escape(it.take(5))).containsMatchIn(text) }
         return hits >= 1
     }
+
+    private fun queryKeys(query: String): Set<String> =
+        query.lowercase().split(Regex("[^a-z0-9]+")).filter { it.length > 2 && it !in QUERY_STOP_WORDS }.toSet()
 
     private fun unsureReply(heardConfidence: Float, offline: Boolean): String = when {
         heardConfidence < HEARD_UNSURE -> "I'm not sure I heard that right. Could you say it again?"
@@ -825,6 +945,8 @@ class Brain(
 
     private enum class StreamMode { UNKNOWN, SAY, TOOL }
 
+    private fun endsSentence(text: String): Boolean = SENTENCE_END.containsMatchIn(text)
+
     companion object {
         const val HISTORY_IDLE_RESET_MS = 900_000L
         const val NO_MODEL_MSG = "My language model isn't loaded, so I can only handle basic commands."
@@ -836,7 +958,25 @@ class Brain(
         const val LOOKING_UP_MSG = "Let me look that up."
         const val NOT_FOUND_MSG = "Sorry, I couldn't find that online."
         /** Search text handed to the model: enough for an answer, short enough to prefill quickly on the phone. */
-        private const val MAX_EVIDENCE_CHARS = 240
+        private const val MAX_EVIDENCE_CHARS = 420
+        /** Questions whose answer is a name, place, date or number: a web answer to these may only use names it read. */
+        private val ASKS_FOR_NAME = Regex(
+            """\b(who|whom|whose|which|when|where|how (many|much|old|long|tall|far|big)|what (year|date|day|time))\b""",
+            RegexOption.IGNORE_CASE,
+        )
+        /** A question's "won" is answered by "India claimed the victory ... to win". */
+        private val KEY_ALIASES: Map<String, List<Regex>> = listOf(
+            Regex("""\bwins?\b"""), Regex("""\bwon\b"""), Regex("""\bvictor"""), Regex("""\bbeat""")
+        ).let { outcome -> mapOf("won" to outcome, "win" to outcome, "wins" to outcome, "winner" to outcome) }
+        /** Capitalised words and numbers in an answer: the claims a web answer must take from the search text. */
+        private val NAME_OR_NUMBER = Regex("""\b(?:\p{Lu}[\p{L}'’-]*|\d(?:[\d,.]*\d)?)""")
+        /** Capitalised only because they start a sentence: not claims. */
+        private val COMMON_CAPITALISED = setOf(
+            "the", "a", "an", "it", "it's", "its", "this", "that", "these", "those", "he", "she", "they", "we", "you", "i",
+            "i'm", "in", "on", "at", "for", "of", "yes", "no", "according", "sorry", "there", "their", "his", "her", "as",
+            "by", "from", "with", "and", "but", "so", "while", "during", "after", "before", "today", "currently", "also",
+            "however", "both", "sure", "my", "our", "if", "when", "what", "who", "where", "which", "unfortunately",
+        )
         /**
          * Factual answers with a token below this are looked up when online. Wrong names on the phone: 0.12-0.35
          * (Gemma's "Jana Samata" anthem: 0.33); a right "Paris." came in at 0.42, so 0.45 sent it to a needless lookup.
@@ -899,6 +1039,8 @@ class Brain(
         )
         /** A later sentence this unsure is cut even in chat (the model is rambling). */
         private const val VERY_UNSURE_SCORE = 0.35f
+        /** A full stop, "!" or "?", possibly followed by a closing quote or bracket. */
+        private val SENTENCE_END = Regex("""[.!?…]["'”’)\]]*$""")
         private const val ANTI_ECHO_NUDGE = "Do NOT repeat the user's words. Answer directly."
         private val RETRY_SAMPLING = SamplingConfig(
             temperature = 0.72f,
