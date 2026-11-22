@@ -29,7 +29,9 @@ android {
                     "-DGGML_OPENMP=OFF",
                     "-DGGML_LLAMAFILE=OFF",
                     "-DLLAMA_BUILD_MTMD=ON",
-                    "-DBUILD_SHARED_LIBS=OFF"
+                    "-DBUILD_SHARED_LIBS=ON",
+                    "-DGGML_BACKEND_DL=ON",
+                    "-DGGML_CPU_ALL_VARIANTS=ON"
                 )
             }
         }
@@ -68,6 +70,11 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        // Extract native libraries to disk: ggml finds its CPU variants (libggml-cpu-android_*.so) by listing the
+        // app's native library folder, which does not work while they stay inside the APK.
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
     testOptions {

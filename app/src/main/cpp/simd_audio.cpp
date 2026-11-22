@@ -1,4 +1,5 @@
 #include "simd_audio.h"
+#include "cpu_topology.h"
 
 #include <sched.h>
 
@@ -311,10 +312,6 @@ Java_com_jarvis_edge_audio_SimdAudio_nativeNormalizeUtterance(
 extern "C" JNIEXPORT void JNICALL
 Java_com_jarvis_edge_audio_SimdAudio_nativePinCurrentThreadToLittleCores(
     JNIEnv *, jclass) {
-  cpu_set_t mask;
-  CPU_ZERO(&mask);
-  for (int cpu = 0; cpu <= 3; ++cpu) {
-    CPU_SET(cpu, &mask);
-  }
+  cpu_set_t mask = cputopo::audio_cores_mask();
   sched_setaffinity(0, sizeof(mask), &mask);
 }

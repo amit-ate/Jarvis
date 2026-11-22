@@ -431,7 +431,10 @@ class JarvisService : Service() {
 
             val missingLlm = paths.missingLlm()
             val llmFile = File(paths.root, paths.llmRelative())
-            val jniEngine = LlamaJniEngine().also { llmEngine = it }
+            val jniEngine = LlamaJniEngine().also {
+                it.tuningStore = com.jarvis.edge.brain.ThreadTuningStore(File(filesDir, "cpu_tuning.txt"))
+                llmEngine = it
+            }
             var startStatus = "Ready"
             if (missingLlm.isEmpty()) {
                 if (!healthGuard.shouldUnloadChatModel()) {
@@ -1182,6 +1185,16 @@ class JarvisService : Service() {
 
             // Background proactive initiative loop (due reminders, thermal/battery alerts, greetings, daily recap).
             initiativeJob?.cancel()
+            // Once per phone and model: time a few thread counts while idle and keep the fastest.
+            serviceScope.launch(Dispatchers.IO) {
+                runCatching {
+                    tuneThreadsWhenIdle(
+                        engine = jniEngine,
+                        isIdle = { _state.value == AssistantState.IDLE },
+                        log = { android.util.Log.i("JarvisBrain", it) },
+                    )
+                }.onFailure { android.util.Log.w("JarvisBrain", "thread tuning failed", it) }
+            }
             initiativeJob = serviceScope.launch(Dispatchers.IO) {
                 SimdAudio.pinCurrentThreadToLittleCores()
                 while (isActive) {

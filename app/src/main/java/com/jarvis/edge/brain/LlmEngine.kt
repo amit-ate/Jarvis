@@ -86,6 +86,30 @@ class LlamaJniEngine : LlmEngine {
     override val isLoaded: Boolean
         get() = handle != 0L
 
+    /** Where per-phone thread tuning results live; set by the service before [load]. */
+    @Volatile
+    var tuningStore: ThreadTuningStore? = null
+
+    /** Cache key of the loaded model's tuning (model, CPU code variant, core layout). */
+    @Volatile
+    private var tuneKey: String? = null
+
+    /** Thread counts in use (null: the native defaults) and an unfinished real-answer trial, if any. */
+    private var threads: ThreadChoice? = null
+    private var trial: GenerationTrial? = null
+
+    /** The processor as the native layer sees it (null if the report could not be read). */
+    val cpuInfo: CpuInfo? by lazy { runCatching { CpuInfo.parse(nativeCpuInfo()) }.getOrNull() }
+
+    /** Result of timing one thread count. */
+    sealed interface BenchResult {
+        data class Timed(val timing: ThreadTiming, val elapsedMs: Long) : BenchResult
+        /** The user needed the model; try this count again later. */
+        object Cancelled : BenchResult
+        /** Failed or too slow for its time budget. */
+        data class TooSlow(val elapsedMs: Long) : BenchResult
+    }
+
     override val lastTokenLogProb: Float
         get() = handle.let { if (it == 0L) Float.NaN else nativeLastTokenLogProb(it) }
 
@@ -100,7 +124,77 @@ class LlamaJniEngine : LlmEngine {
             val loaded = nativeLoad(modelFile.absolutePath, contextTokens)
             check(loaded != 0L) { "Failed to load GGUF model: ${modelFile.absolutePath}" }
             handle = loaded
+            val key = cpuInfo?.let { ThreadTuner.cacheKey(modelFile, it) }
+            tuneKey = key
+            val cached = key?.let { k -> runCatching { tuningStore?.get(k) }.getOrNull() }
+            threads = null
+            trial = null
+            if (cached != null && nativeSetThreads(loaded, cached.generate, cached.prefill)) useChoice(cached)
         }
+    }
+
+    private fun useChoice(choice: ThreadChoice) {
+        threads = choice
+        trial = if (choice.trialGenerate > 0) GenerationTrial(choice.generate, choice.trialGenerate) else null
+    }
+
+    /** During a trial: switch to the count that needs answers next. Returns the generation count in use. */
+    private fun prepareTrial(h: Long): Int? {
+        val t = trial ?: return null
+        val current = threads ?: return null
+        val want = t.next()
+        if (want != current.generate && nativeSetThreads(h, want, current.prefill)) {
+            threads = current.copy(generate = want)
+        }
+        return threads?.generate
+    }
+
+    /** During a trial: record this answer's speed and settle once both counts have enough answers. */
+    private fun recordTrial(h: Long, used: Int, stats: GenStats) {
+        val t = trial ?: return
+        if (stats.outputTokens >= 6) t.record(used, stats.tokensPerSecond.toDouble())
+        val winner = t.decided() ?: return
+        val current = threads ?: return
+        if (winner != current.generate) nativeSetThreads(h, winner, current.prefill)
+        val settled = ThreadChoice(winner, current.prefill)
+        threads = settled
+        trial = null
+        val key = tuneKey
+        val store = tuningStore
+        if (key != null && store != null) runCatching { store.put(key, settled) }
+        runCatching { android.util.Log.i("JarvisLlm", "generation threads settled on $winner from real answers (${t.summary()})") }
+    }
+
+    /** True when the loaded model has never been tuned on this phone. */
+    fun needsThreadTuning(): Boolean {
+        val key = tuneKey ?: return false
+        val store = tuningStore ?: return false
+        return isLoaded && runCatching { store.get(key) }.getOrNull() == null
+    }
+
+    /** Times [threads] threads on a throw-away context; gives up after [budgetMs] or when [generate] is called. */
+    fun benchThreads(threads: Int, budgetMs: Long): BenchResult = lock.withLock {
+        val h = handle
+        if (h == 0L) return BenchResult.TooSlow(0)
+        val t0 = System.nanoTime()
+        val raw = nativeBenchThreads(h, threads, budgetMs)
+        val elapsed = (System.nanoTime() - t0) / 1_000_000
+        when {
+            raw.size == 1 && raw[0] < 0 -> BenchResult.Cancelled
+            raw.size == 2 && raw[0] > 0 && raw[1] > 0 -> BenchResult.Timed(ThreadTiming(threads, raw[0], raw[1]), elapsed)
+            else -> BenchResult.TooSlow(elapsed)
+        }
+    }
+
+    /** Applies and remembers tuned thread counts for the loaded model. */
+    fun applyThreads(choice: ThreadChoice): Boolean = lock.withLock {
+        val h = handle
+        if (h == 0L || !nativeSetThreads(h, choice.generate, choice.prefill)) return false
+        useChoice(choice)
+        val key = tuneKey
+        val store = tuningStore
+        if (key != null && store != null) runCatching { store.put(key, choice) }
+        true
     }
 
     override fun generate(
@@ -123,9 +217,11 @@ class LlamaJniEngine : LlmEngine {
         sampling: SamplingConfig,
         onToken: (String) -> Boolean,
     ): GenStats {
+        nativeCancelBench() // a thread-timing run gives the model back at once
         return lock.withLock {
         val currentHandle = handle
         check(currentHandle != 0L) { "LlmEngine is not loaded" }
+        val trialThreads = prepareTrial(currentHandle)
 
         val raw = nativeGenerateWithSampling(
             handle = currentHandle,
@@ -141,7 +237,16 @@ class LlamaJniEngine : LlmEngine {
             penalizeUserTokens = sampling.penalizeUserTokens,
             callback = TokenCallback { piece -> onToken(piece) },
         )
-        parseGenStats(raw)
+        parseGenStats(raw).also { s ->
+            if (trialThreads != null) recordTrial(currentHandle, trialThreads, s)
+            runCatching {
+                android.util.Log.i(
+                    "JarvisLlm",
+                    "prompt ${s.promptTokens} tok (${s.cachedTokens} reused), first token ${s.firstTokenMs} ms, " +
+                        "${s.outputTokens} tok at ${"%.1f".format(s.tokensPerSecond)} tok/s",
+                )
+            }
+        }
         }
     }
 
@@ -234,6 +339,7 @@ class LlamaJniEngine : LlmEngine {
     }
 
     override fun unload() {
+        nativeCancelBench()
         lock.withLock {
             val h = handle
             handle = 0L
@@ -322,6 +428,8 @@ class LlamaJniEngine : LlmEngine {
     private external fun nativeSaveState(handle: Long, path: String): Boolean
     private external fun nativeLoadState(handle: Long, path: String): Boolean
     private external fun nativeUnload(handle: Long)
+    private external fun nativeBenchThreads(handle: Long, threads: Int, budgetMs: Long): DoubleArray
+    private external fun nativeSetThreads(handle: Long, generate: Int, prefill: Int): Boolean
 
     companion object {
         init {
@@ -334,6 +442,12 @@ class LlamaJniEngine : LlmEngine {
 
         @JvmStatic
         external fun nativePinCurrentThreadToBigCores()
+
+        @JvmStatic
+        external fun nativeCpuInfo(): String
+
+        @JvmStatic
+        external fun nativeCancelBench()
 
         @JvmStatic
         external fun nativeDescribeImage(

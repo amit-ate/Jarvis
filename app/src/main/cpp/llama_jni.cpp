@@ -1,4 +1,7 @@
 #include <android/log.h>
+#include <dlfcn.h>
+#include <sys/stat.h>
+#include <sys/system_properties.h>
 #include <jni.h>
 #include <fcntl.h>
 #include <sched.h>
@@ -13,6 +16,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "ggml-backend.h"
@@ -22,23 +26,88 @@
 #include "mtmd-helper.h"
 #include "mtmd.h"
 
+#include "cpu_topology.h"
+
 namespace {
 
 constexpr const char *kLogTag = "JarvisLlamaJni";
 
 std::once_flag g_backend_once;
 
+// The CPU code is built several times, from plain ARMv8.0 NEON up to dot-product / fp16 / int8-matmul variants
+// (libggml-cpu-android_*.so). ggml asks each one whether this processor supports it and loads the best. Setting the
+// system property debug.jarvis.cpu_variant (e.g. android_armv8.0_1) forces one, for A/B timing.
+std::string g_cpu_features = "unknown";
+
+std::string native_lib_dir() {
+  Dl_info info{};
+  if (dladdr(reinterpret_cast<void *>(&native_lib_dir), &info) == 0 || !info.dli_fname) return "";
+  std::string p(info.dli_fname);
+  size_t slash = p.rfind('/');
+  return slash == std::string::npos ? "" : p.substr(0, slash);
+}
+
 void ensure_backend_init() {
-  std::call_once(g_backend_once, []() { llama_backend_init(); });
+  std::call_once(g_backend_once, []() {
+    llama_backend_init();
+    const std::string dir = native_lib_dir();
+    char forced[PROP_VALUE_MAX] = {0};
+    __system_property_get("debug.jarvis.cpu_variant", forced);
+    if (forced[0] != 0 && !dir.empty()) {
+      std::string path = dir + "/libggml-cpu-" + forced + ".so";
+      if (!ggml_backend_load(path.c_str())) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag, "forced CPU variant %s failed to load", forced);
+      }
+    }
+    if (ggml_backend_reg_by_name("CPU") == nullptr) {
+      ggml_backend_load_all_from_path(dir.empty() ? nullptr : dir.c_str());
+    }
+    ggml_backend_reg_t cpu = ggml_backend_reg_by_name("CPU");
+    if (cpu) {
+      std::string feats;
+      auto get_features = reinterpret_cast<ggml_backend_get_features_t>(
+          ggml_backend_reg_get_proc_address(cpu, "ggml_backend_get_features"));
+      if (get_features) {
+        for (ggml_backend_feature *f = get_features(cpu); f && f->name; ++f) {
+          feats += (feats.empty() ? "" : " ") + std::string(f->name) + "=" + f->value;
+        }
+      }
+      g_cpu_features = feats.empty() ? "baseline" : feats;
+    } else {
+      g_cpu_features = "none";
+      __android_log_print(ANDROID_LOG_ERROR, kLogTag, "no CPU backend could be loaded from %s", dir.c_str());
+    }
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "CPU backend: %s%s%s | %s", g_cpu_features.c_str(),
+                        forced[0] ? " (forced " : "", forced[0] ? (std::string(forced) + ")").c_str() : "",
+                        cputopo::describe().c_str());
+  });
 }
 
 void pin_to_big_cores() {
-  cpu_set_t mask;
-  CPU_ZERO(&mask);
-  for (int cpu = 4; cpu <= 7; ++cpu) {
-    CPU_SET(cpu, &mask);
-  }
+  cpu_set_t mask = cputopo::top_cores_mask(cputopo::llm_cores());
   sched_setaffinity(0, sizeof(mask), &mask);
+}
+
+// ggml_threadpool_new/free live in the CPU backend, which is now loaded at run time, so they are looked up.
+ggml_threadpool_t threadpool_new(ggml_threadpool_params *p) {
+  using fn_t = ggml_threadpool_t (*)(ggml_threadpool_params *);
+  static fn_t fn = nullptr;
+  if (!fn) {
+    ggml_backend_reg_t cpu = ggml_backend_reg_by_name("CPU");
+    if (cpu) fn = reinterpret_cast<fn_t>(ggml_backend_reg_get_proc_address(cpu, "ggml_threadpool_new"));
+  }
+  return fn ? fn(p) : nullptr;
+}
+
+void threadpool_free(ggml_threadpool_t tp) {
+  using fn_t = void (*)(ggml_threadpool_t);
+  static fn_t fn = nullptr;
+  if (!tp) return;
+  if (!fn) {
+    ggml_backend_reg_t cpu = ggml_backend_reg_by_name("CPU");
+    if (cpu) fn = reinterpret_cast<fn_t>(ggml_backend_reg_get_proc_address(cpu, "ggml_threadpool_free"));
+  }
+  if (fn) fn(tp);
 }
 
 // Samples like llama.cpp's common sampler: the chain (top-k first) runs on the raw logits and only the chosen token
@@ -71,15 +140,18 @@ llama_token sample_lazy_grammar(llama_sampler *chain, llama_sampler *grammar, ll
   return id;
 }
 
-ggml_threadpool_t create_big_core_threadpool(int n_threads) {
+// n_threads workers that may run on the n_cores fastest cores (n_cores defaults to the tuned chat-model set).
+ggml_threadpool_t create_big_core_threadpool(int n_threads, int n_cores = 0) {
   struct ggml_threadpool_params tpp = ggml_threadpool_params_default(n_threads);
   tpp.poll = 0; // Mandatory on SDM636 Android to prevent big-core barrier spin
                 // livelock.
-  for (int cpu = 4; cpu <= 7 && cpu < GGML_MAX_N_THREADS; ++cpu) {
-    tpp.cpumask[cpu] = true;
+  if (n_cores <= 0) n_cores = std::max(n_threads, cputopo::llm_cores());
+  const cpu_set_t mask = cputopo::top_cores_mask(n_cores);
+  for (int cpu = 0; cpu < GGML_MAX_N_THREADS && cpu < CPU_SETSIZE; ++cpu) {
+    if (CPU_ISSET(cpu, &mask)) tpp.cpumask[cpu] = true;
   }
   tpp.strict_cpu = false;
-  return ggml_threadpool_new(&tpp);
+  return threadpool_new(&tpp);
 }
 
 // Pins the calling thread to the Cortex-A73 big cores (4-7) and restores the
@@ -92,10 +164,7 @@ struct ScopedBigCoreAffinity {
   ScopedBigCoreAffinity() {
     if (sched_getaffinity(0, sizeof(previous), &previous) != 0)
       return;
-    cpu_set_t big;
-    CPU_ZERO(&big);
-    for (int cpu = 4; cpu <= 7; ++cpu)
-      CPU_SET(cpu, &big);
+    cpu_set_t big = cputopo::top_cores_mask(cputopo::llm_cores());
     restore = sched_setaffinity(0, sizeof(big), &big) == 0;
   }
   ~ScopedBigCoreAffinity() {
@@ -103,6 +172,42 @@ struct ScopedBigCoreAffinity {
       sched_setaffinity(0, sizeof(previous), &previous);
   }
 };
+
+// ---- Thread tuning -------------------------------------------------------------------------------------------
+// The fastest thread count depends on the phone: on a 4+4 big.LITTLE chip 3-4 big cores win, on a 2+6 chip adding
+// little cores may help. Kotlin (ThreadTuner) times a few counts with nativeBenchThreads while the assistant is idle,
+// picks the winners and applies them with nativeSetThreads; until then the defaults below are used.
+std::atomic<bool> g_bench_cancel{false};
+
+struct TuneDeadline {
+  std::chrono::steady_clock::time_point until;
+  bool timed_out = false;
+};
+
+// Cancels a timing run when it passes its deadline (spreading threads over slow cores can make ggml's barriers crawl,
+// seen on the Snapdragon 636 with 8 threads) or when the user needs the model (nativeCancelBench).
+bool tune_abort_cb(void *data) {
+  auto *d = static_cast<TuneDeadline *>(data);
+  if (std::chrono::steady_clock::now() > d->until) d->timed_out = true;
+  return d->timed_out || g_bench_cancel.load();
+}
+
+double ms_since(std::chrono::steady_clock::time_point t0) {
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// Mirrors ThreadTuner.defaultChoice in Kotlin.
+void default_threads(int &decode, int &batch) {
+  const cputopo::Topology &t = cputopo::get();
+  if (t.top_class >= 4) {
+    decode = 3;  // one big core left for audio and speech synthesis
+    batch = 4;
+  } else if (t.top_class == 3) {
+    decode = batch = 3;
+  } else {
+    decode = batch = std::min(4, t.ncpu);
+  }
+}
 
 struct LlmSession {
   llama_model *model = nullptr;
@@ -116,7 +221,29 @@ struct LlmSession {
   // Raw-model log-probability of the token most recently emitted to the callback (NaN before the first). Read from
   // inside the token callback without taking mu, which generate already holds.
   std::atomic<float> last_logp{NAN};
+  // Every threadpool this session has made, keyed by (threads, cores). The CPU backend keeps a pointer to the last
+  // pool it ran and pauses it when the next one is attached, so a pool may only be freed after the context is gone:
+  // switching thread counts reuses these instead of freeing (freeing early left ggml pausing freed memory and hung).
+  std::vector<std::tuple<int, int, ggml_threadpool_t>> pools;
 };
+
+// The session's pool for n threads on the current chat-model core set, made on first use.
+ggml_threadpool_t session_pool(LlmSession *s, int n) {
+  const int cores = std::max(n, cputopo::llm_cores());
+  for (auto &p : s->pools) {
+    if (std::get<0>(p) == n && std::get<1>(p) == cores) return std::get<2>(p);
+  }
+  ggml_threadpool_t tp = create_big_core_threadpool(n, cores);
+  if (tp) s->pools.emplace_back(n, cores, tp);
+  return tp;
+}
+
+void free_session_pools(LlmSession *s) {
+  for (auto &p : s->pools) threadpool_free(std::get<2>(p));
+  s->pools.clear();
+  s->threadpool = nullptr;
+  s->threadpool_batch = nullptr;
+}
 
 int64_t now_us() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -365,6 +492,7 @@ JNIEXPORT jlong JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLoad(
   cparams.n_ctx = static_cast<uint32_t>(std::max<jint>(256, contextTokens));
   cparams.n_batch = 512;
   cparams.n_ubatch = 512;
+  // Placeholder counts; the tuned ones are applied with the threadpools below.
   cparams.n_threads = 3;
   cparams.n_threads_batch = 4;
   cparams.no_perf = true;
@@ -379,15 +507,21 @@ JNIEXPORT jlong JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLoad(
     return 0;
   }
 
-  ggml_threadpool_t tp = create_big_core_threadpool(3);
-  ggml_threadpool_t tp_batch = tp ? create_big_core_threadpool(4) : nullptr;
-  if (tp) {
-    llama_attach_threadpool(ctx, tp, tp_batch ? tp_batch : tp);
-  }
+  int n_decode = 3, n_batch = 4;
+  default_threads(n_decode, n_batch);
+  cputopo::set_llm_cores(std::max(n_decode, n_batch));
+  pin_to_big_cores();
+  llama_set_n_threads(ctx, n_decode, n_batch);
 
   auto *session = new LlmSession();
   session->model = model;
   session->ctx = ctx;
+  // Workers may float over the whole chat-model core set (as with 3 threads on 4 big cores before).
+  ggml_threadpool_t tp = session_pool(session, n_decode);
+  ggml_threadpool_t tp_batch = tp ? session_pool(session, n_batch) : nullptr;
+  if (tp) {
+    llama_attach_threadpool(ctx, tp, tp_batch ? tp_batch : tp);
+  }
   session->threadpool = tp;
   session->threadpool_batch = tp_batch;
   return reinterpret_cast<jlong>(session);
@@ -1015,6 +1149,122 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeTrainControlVector(
   return out_arr;
 }
 
+// "ncpu=8;big=4;features=NEON=1 ...;sig=cap,0:495,..." - what Kotlin needs to plan and cache the tuning.
+JNIEXPORT jstring JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeCpuInfo(JNIEnv *env, jclass) {
+  ensure_backend_init();
+  const cputopo::Topology &t = cputopo::get();
+  std::string s = "ncpu=" + std::to_string(t.ncpu) + ";big=" + std::to_string(t.top_class) +
+                  ";features=" + g_cpu_features + ";sig=" + t.signature;
+  return env->NewStringUTF(s.c_str());
+}
+
+JNIEXPORT void JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeCancelBench(JNIEnv *, jclass) {
+  g_bench_cancel.store(true);
+}
+
+// Times k threads on the k fastest cores on a small throw-away context (the live conversation cache is untouched).
+// Returns {prefill ms/token, generate ms/token}; {} if it failed or ran past budgetMs; {-1} if cancelled.
+JNIEXPORT jdoubleArray JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeBenchThreads(
+    JNIEnv *env, jobject, jlong handle, jint k, jlong budgetMs) {
+  auto *session = reinterpret_cast<LlmSession *>(handle);
+  if (!session || !session->model || k < 1) return env->NewDoubleArray(0);
+  std::lock_guard<std::mutex> lock(session->mu);
+  g_bench_cancel.store(false);
+
+  llama_context_params cp = llama_context_default_params();
+  cp.n_ctx = 128;
+  cp.n_batch = 32;
+  cp.n_ubatch = 32;
+  cp.n_threads = k;
+  cp.n_threads_batch = k;
+  cp.no_perf = true;
+  cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+  llama_context *ctx = llama_init_from_model(session->model, cp);
+  if (!ctx) return env->NewDoubleArray(0);
+
+  const llama_vocab *vocab = llama_model_get_vocab(session->model);
+  std::string text;
+  for (int i = 0; i < 4; ++i) text += "The quick brown fox jumps over the lazy dog while the clock on the wall ticks. ";
+  std::vector<llama_token> toks(256);
+  int n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()), toks.data(),
+                         static_cast<int32_t>(toks.size()), true, false);
+  ggml_threadpool_t tp = n >= 40 ? create_big_core_threadpool(k, k) : nullptr;
+  if (!tp) {
+    llama_free(ctx);
+    return env->NewDoubleArray(0);
+  }
+  toks.resize(32);
+
+  cpu_set_t prev;
+  const bool restore = sched_getaffinity(0, sizeof(prev), &prev) == 0;
+  cpu_set_t mask = cputopo::top_cores_mask(k);
+  sched_setaffinity(0, sizeof(mask), &mask);
+  llama_attach_threadpool(ctx, tp, tp);
+  TuneDeadline deadline{std::chrono::steady_clock::now() + std::chrono::milliseconds(budgetMs)};
+  llama_set_abort_callback(ctx, tune_abort_cb, &deadline);
+
+  bool ok = llama_decode(ctx, llama_batch_get_one(toks.data(), static_cast<int32_t>(toks.size()))) == 0;
+  // Prefill is timed separately from a cold first pass, so run it twice and keep the second.
+  double prefill = 0;
+  if (ok) {
+    llama_memory_clear(llama_get_memory(ctx), true);
+    auto t0 = std::chrono::steady_clock::now();
+    ok = llama_decode(ctx, llama_batch_get_one(toks.data(), static_cast<int32_t>(toks.size()))) == 0;
+    prefill = ms_since(t0) / static_cast<double>(toks.size());
+  }
+  const int kWarm = 2, kTimed = 6;
+  double gen = 0;
+  for (int i = 0; ok && i < kWarm + kTimed; ++i) {
+    llama_token t = toks[i];
+    auto g0 = std::chrono::steady_clock::now();
+    ok = llama_decode(ctx, llama_batch_get_one(&t, 1)) == 0;
+    if (i >= kWarm) gen += ms_since(g0);
+  }
+  const bool cancelled = g_bench_cancel.load() && !deadline.timed_out;
+  if (deadline.timed_out) ok = false;
+
+  llama_set_abort_callback(ctx, nullptr, nullptr);
+  llama_detach_threadpool(ctx);
+  llama_free(ctx);
+  threadpool_free(tp);
+  if (restore) sched_setaffinity(0, sizeof(prev), &prev);
+
+  if (cancelled) {
+    jdoubleArray out = env->NewDoubleArray(1);
+    const jdouble v = -1;
+    env->SetDoubleArrayRegion(out, 0, 1, &v);
+    return out;
+  }
+  if (!ok) return env->NewDoubleArray(0);
+  jdoubleArray out = env->NewDoubleArray(2);
+  const jdouble vals[2] = {prefill, gen / kTimed};
+  env->SetDoubleArrayRegion(out, 0, 2, vals);
+  return out;
+}
+
+// Applies tuned thread counts to the live context (generate uses the decode fastest cores, prompt reading batch).
+JNIEXPORT jboolean JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeSetThreads(
+    JNIEnv *, jobject, jlong handle, jint decode, jint batch) {
+  auto *session = reinterpret_cast<LlmSession *>(handle);
+  if (!session || !session->ctx || decode < 1 || batch < 1) return JNI_FALSE;
+  std::lock_guard<std::mutex> lock(session->mu);
+  const int previous_cores = cputopo::llm_cores();
+  cputopo::set_llm_cores(std::max(decode, batch));
+  ggml_threadpool_t tp = session_pool(session, decode);
+  ggml_threadpool_t tp_batch = tp ? session_pool(session, batch) : nullptr;
+  if (!tp || !tp_batch) {
+    cputopo::set_llm_cores(previous_cores);
+    return JNI_FALSE;
+  }
+  llama_detach_threadpool(session->ctx);
+  session->threadpool = tp;
+  session->threadpool_batch = tp_batch;
+  llama_set_n_threads(session->ctx, decode, batch);
+  llama_attach_threadpool(session->ctx, tp, tp_batch);
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "threads set: generate %d, prefill %d", decode, batch);
+  return JNI_TRUE;
+}
+
 JNIEXPORT void JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeUnload(
     JNIEnv *, jobject, jlong handle) {
   auto *session = reinterpret_cast<LlmSession *>(handle);
@@ -1035,14 +1285,7 @@ JNIEXPORT void JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeUnload(
       llama_model_free(session->model);
       session->model = nullptr;
     }
-    if (session->threadpool) {
-      ggml_threadpool_free(session->threadpool);
-      session->threadpool = nullptr;
-    }
-    if (session->threadpool_batch) {
-      ggml_threadpool_free(session->threadpool_batch);
-      session->threadpool_batch = nullptr;
-    }
+    free_session_pools(session);
   }
   delete session;
 }
@@ -1099,11 +1342,12 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeDescribeImage(
   cparams.n_ctx = 2048;
   cparams.n_batch = 256;
   cparams.n_ubatch = 256;
-  cparams.n_threads = 4;
-  cparams.n_threads_batch = 4;
+  const int vlm_threads = std::min(4, cputopo::llm_cores());
+  cparams.n_threads = vlm_threads;
+  cparams.n_threads_batch = vlm_threads;
   cparams.no_perf = true;
   llama_context *vlm_ctx = llama_init_from_model(vlm_model, cparams);
-  ggml_threadpool_t tp = create_big_core_threadpool(4);
+  ggml_threadpool_t tp = create_big_core_threadpool(vlm_threads);
   if (vlm_ctx && tp) {
     llama_attach_threadpool(vlm_ctx, tp, tp);
   }
@@ -1197,7 +1441,7 @@ Java_com_jarvis_edge_brain_LlamaJniEngine_nativeDescribeImage(
   }
   llama_model_free(vlm_model);
   if (tp)
-    ggml_threadpool_free(tp);
+    threadpool_free(tp);
 }
 
 JNIEXPORT jlong JNICALL
