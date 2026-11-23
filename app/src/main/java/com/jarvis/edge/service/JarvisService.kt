@@ -83,6 +83,7 @@ import com.jarvis.edge.mind.WorkingState
 import com.jarvis.edge.mind.WorkingStateStore
 import com.jarvis.edge.setup.AndroidNetworkGate
 import com.jarvis.edge.setup.Downloader
+import com.jarvis.edge.setup.ExtrasRetryPolicy
 import com.jarvis.edge.setup.Fetch
 import com.jarvis.edge.setup.Installer
 import com.jarvis.edge.setup.NetState
@@ -131,6 +132,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -150,6 +152,12 @@ class JarvisService : Service() {
     private var extrasCallback: ConnectivityManager.NetworkCallback? = null
     /** Wake-ups for the extras loop. Conflated, so a network change during a run is not lost and runs never overlap. */
     private var extrasKicks: Channel<Unit>? = null
+    /** Guards the extras watch's network state and last failed run; the callbacks and the loop both use it. */
+    private val extrasLock = Any()
+    /** Last gate state the extras watch saw; a run is kicked only on a move to ALLOWED (see [ExtrasRetryPolicy]). */
+    private var extrasNetState = NetState.ALLOWED
+    /** When the last background extras run ended with the marker still pending, in epoch ms; null if none in this process. */
+    private var extrasLastFailedRunAt: Long? = null
     private val setupNet: AndroidNetworkGate by lazy {
         AndroidNetworkGate(this, getSharedPreferences(PREFS, Context.MODE_PRIVATE))
     }
@@ -1577,35 +1585,56 @@ class JarvisService : Service() {
     }
 
     /**
-     * After "Start without it": fetches the extras now, in the background, and again on each network change while the
-     * marker still says extras are pending. One run at a time; the callback is dropped once the marker is cleared.
+     * After "Start without it": fetches the extras now, in the background, and again when the network becomes usable
+     * (not-allowed to allowed), but not within the cooldown after a run that failed. One run at a time; the callback is
+     * dropped once the marker is cleared.
      */
     @Synchronized
     private fun startExtrasWatch(installer: Installer, planner: SetupPlanner) {
         if (extrasKicks != null) return
         val kicks = Channel<Unit>(Channel.CONFLATED)
         extrasKicks = kicks
+        synchronized(extrasLock) { extrasNetState = setupNet.state() }
         serviceScope.launch(Dispatchers.IO) {
             for (kick in kicks) {
                 if (planner.marker() != SetupMarker.EXTRAS_PENDING) break
                 if (setupNet.state() != NetState.ALLOWED) continue
-                installer.runExtrasInBackground()
+                // A kick queued during a failed run must not restart it inside the cooldown.
+                if (synchronized(extrasLock) { ExtrasRetryPolicy.inCooldown(System.currentTimeMillis(), extrasLastFailedRunAt) }) {
+                    continue
+                }
+                try {
+                    installer.runExtrasInBackground()
+                } catch (e: IOException) {
+                    android.util.Log.e("JarvisSetup", "extras run could not save its files", e)
+                }
                 if (planner.marker() != SetupMarker.EXTRAS_PENDING) break
+                synchronized(extrasLock) { extrasLastFailedRunAt = System.currentTimeMillis() }
             }
             stopExtrasWatch()
         }
         val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                kicks.trySend(Unit)
-            }
+            override fun onAvailable(network: Network) = onExtrasNetworkEvent(kicks)
 
-            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                kicks.trySend(Unit)
-            }
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) =
+                onExtrasNetworkEvent(kicks)
+
+            override fun onLost(network: Network) = onExtrasNetworkEvent(kicks)
         }
         extrasCallback = callback
         getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(callback)
         kicks.trySend(Unit)
+    }
+
+    /** Recomputes the gate state and kicks the extras loop only when [ExtrasRetryPolicy.shouldRun] says so. */
+    private fun onExtrasNetworkEvent(kicks: Channel<Unit>) {
+        val run = synchronized(extrasLock) {
+            val now = setupNet.state()
+            val prev = extrasNetState
+            extrasNetState = now
+            ExtrasRetryPolicy.shouldRun(prev, now, System.currentTimeMillis(), extrasLastFailedRunAt)
+        }
+        if (run) kicks.trySend(Unit)
     }
 
     @Synchronized
