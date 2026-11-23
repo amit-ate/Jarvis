@@ -59,6 +59,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.jarvis.edge.BuildConfig
 import com.jarvis.edge.core.AssistantState
 import com.jarvis.edge.core.ChatMessage
 import com.jarvis.edge.core.ModelPaths
@@ -85,7 +86,7 @@ class ChatActivity : ComponentActivity() {
                 var input by remember { mutableStateOf("") }
                 var speakReplies by remember { mutableStateOf(prefs.getBoolean("speak", false)) }
                 var followUp by remember { mutableStateOf(JarvisService.followUpEnabled(this@ChatActivity)) }
-                val voices = remember { Voices.available(File(ModelPaths.DEFAULT_ROOT)) }
+                val voices = remember { Voices.available(ModelPaths.rootFor(BuildConfig.DEBUG)) }
                 var voiceId by remember { mutableStateOf(JarvisService.currentVoiceId(this@ChatActivity)) }
                 var showOptions by remember { mutableStateOf(false) }
                 // Safety net: clearing keeps the old messages for a few seconds so it can be undone.

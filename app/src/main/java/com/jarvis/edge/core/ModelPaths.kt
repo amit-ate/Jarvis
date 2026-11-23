@@ -63,6 +63,8 @@ class ModelPaths(
 
     companion object {
         const val DEFAULT_ROOT = "/sdcard/Jarvis/models"
+        /** Debug builds only: a file holding one absolute model root path, to point the app at another folder. */
+        const val ROOT_OVERRIDE_PATH = "/sdcard/Jarvis/model_root.txt"
         const val DEFAULT_LLM_MODEL = "google_gemma-3-1b-it-Q4_0.gguf"
         /** Smaller fallback chat model, used when the default is not on the phone. */
         const val FALLBACK_LLM_MODEL = "qwen2.5-0.5b-instruct-q4_0.gguf"
@@ -78,6 +80,13 @@ class ModelPaths(
          * resolves it even before active_model.txt exists.
          */
         val PREFERRED_LLM_MODELS = listOf(DEFAULT_LLM_MODEL, QWEN_15B_MODEL, FALLBACK_LLM_MODEL)
+
+        /** Where the chat and speech models live: [DEFAULT_ROOT], or in debug builds the absolute path in [overrideFile] if any. */
+        fun rootFor(debug: Boolean, overrideFile: File = File(ROOT_OVERRIDE_PATH)): File {
+            if (!debug) return File(DEFAULT_ROOT)
+            val named = runCatching { overrideFile.readText().trim() }.getOrNull().orEmpty()
+            return if (File(named).isAbsolute) File(named) else File(DEFAULT_ROOT)
+        }
 
         /** Present = exists and non-empty: a file with bytes, or a folder with at least one entry. */
         fun isPresent(file: File): Boolean =

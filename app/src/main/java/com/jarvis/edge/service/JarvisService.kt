@@ -24,6 +24,7 @@ import com.jarvis.edge.audio.SileroVad
 import com.jarvis.edge.audio.SimdAudio
 import com.jarvis.edge.audio.SpeechSegmenter
 import com.jarvis.edge.audio.TranscriptArbiter
+import com.jarvis.edge.BuildConfig
 import com.jarvis.edge.brain.Brain
 import com.jarvis.edge.brain.ControlVector
 import com.jarvis.edge.brain.ControlVectorCodec
@@ -77,6 +78,14 @@ import com.jarvis.edge.mind.SqliteMindStore
 import com.jarvis.edge.mind.VectorMath
 import com.jarvis.edge.mind.WorkingState
 import com.jarvis.edge.mind.WorkingStateStore
+import com.jarvis.edge.setup.AndroidNetworkGate
+import com.jarvis.edge.setup.Downloader
+import com.jarvis.edge.setup.Fetch
+import com.jarvis.edge.setup.Installer
+import com.jarvis.edge.setup.ModelManifest
+import com.jarvis.edge.setup.SetupMarker
+import com.jarvis.edge.setup.SetupPlanner
+import com.jarvis.edge.setup.SetupProgress
 import com.jarvis.edge.tools.BatteryStatusTool
 import com.jarvis.edge.tools.CancelTimersTool
 import com.jarvis.edge.tools.GetDateTool
@@ -104,6 +113,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.withLock
@@ -130,6 +140,11 @@ class JarvisService : Service() {
     private var voiceJob: Job? = null
     private var reflectionJob: Job? = null
     private var initiativeJob: Job? = null
+    /** The first-setup (and extras) installer; the setup actions reach it through here. */
+    @Volatile private var setupInstaller: Installer? = null
+    private val setupNet: AndroidNetworkGate by lazy {
+        AndroidNetworkGate(this, getSharedPreferences(PREFS, Context.MODE_PRIVATE))
+    }
 
     private var speaker: SherpaSpeaker? = null
     private var vad: SileroVad? = null
@@ -190,7 +205,7 @@ class JarvisService : Service() {
             ACTION_STOP_SPEAKING -> speaker?.stop()
             ACTION_SET_VOICE -> {
                 val id = intent.getStringExtra(EXTRA_TEXT).orEmpty()
-                val voice = com.jarvis.edge.core.Voices.available(File(ModelPaths.DEFAULT_ROOT)).firstOrNull { it.id == id }
+                val voice = com.jarvis.edge.core.Voices.available(ModelPaths.rootFor(BuildConfig.DEBUG)).firstOrNull { it.id == id }
                 val sp = speaker
                 if (voice != null && sp != null) {
                     getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("voice", voice.id).apply()
@@ -214,6 +229,9 @@ class JarvisService : Service() {
                 }
             }
             ACTION_MANUAL_WAKE -> manualWakeRequested.set(true)
+            ACTION_SETUP_RETRY -> setupInstaller?.retry(intent.getStringExtra(EXTRA_TEXT).orEmpty())
+            ACTION_SETUP_START_WITHOUT -> setupInstaller?.startWithout()
+            ACTION_SETUP_WIFI_ONLY -> setupNet.wifiOnly = intent.getBooleanExtra(EXTRA_ON, true)
             ACTION_ENROLL -> intent.getStringExtra(EXTRA_TEXT)?.trim()?.takeIf { it.isNotEmpty() }?.let { enrollLabel.set(it) }
             ACTION_TEXT_INPUT -> {
                 val text = intent.getStringExtra(EXTRA_TEXT)?.trim().orEmpty()
@@ -292,7 +310,22 @@ class JarvisService : Service() {
     private fun startVoicePipeline() {
         if (voiceJob?.isActive == true) return
         voiceJob = serviceScope.launch {
-            val modelRoot = File(ModelPaths.DEFAULT_ROOT)
+            val modelRoot = ModelPaths.rootFor(BuildConfig.DEBUG)
+            val planner = SetupPlanner(modelRoot, loadManifest())
+            val downloader = Downloader()
+            val installer = Installer(
+                root = modelRoot,
+                manifest = planner.manifest,
+                fetch = Fetch { url, size, sha, part, onBytes -> downloader.fetch(url, size, sha, part, onBytes) },
+                net = setupNet,
+                bundled = { path -> runCatching { assets.open("models/bundled/$path").use { it.readBytes() } }.getOrNull() },
+            )
+            setupInstaller = installer
+            if (planner.needsSetup()) {
+                runFirstSetup(installer)
+            } else if (planner.marker() == SetupMarker.EXTRAS_PENDING) {
+                serviceScope.launch(Dispatchers.IO) { installer.runExtrasInBackground() }
+            }
             val paths = ModelPaths(modelRoot, ModelPaths.resolveLlmFileName(modelRoot))
             android.util.Log.i("JarvisBrain", "chat model: ${paths.llmFileName} (template ${PromptBuilder.templateFor(paths.llmFileName)})")
             val missingSpeech = paths.missingSpeech()
@@ -1489,6 +1522,34 @@ class JarvisService : Service() {
         nm.notify(NOTIFICATION_ID, buildNotification(text))
     }
 
+    private fun loadManifest(): ModelManifest =
+        ModelManifest.parse(assets.open("models/manifest.json").bufferedReader().use { it.readText() })
+
+    /**
+     * Runs the first setup while the screen shows [setup] and the notification shows the percentage. Returns when the
+     * must-haves are in place (or the user chose "Start without it"); the voice pipeline then starts as usual.
+     */
+    private suspend fun runFirstSetup(installer: Installer) {
+        updateState(AssistantState.IDLE, "Setting up")
+        var shownPercent = -1
+        val mirror = serviceScope.launch {
+            installer.progress.collect { progress: SetupProgress ->
+                _setup.value = progress
+                val percent = (progress.fraction * 100).toInt()
+                if (percent != shownPercent) {
+                    shownPercent = percent
+                    updateNotification("Downloading models · $percent%")
+                }
+            }
+        }
+        try {
+            installer.runFirstSetup()
+        } finally {
+            mirror.cancelAndJoin()
+            _setup.value = null
+        }
+    }
+
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(POWER_SERVICE) as PowerManager
@@ -1548,6 +1609,39 @@ class JarvisService : Service() {
         const val ACTION_TEXT_INPUT = "com.jarvis.edge.action.TEXT_INPUT"
         const val ACTION_ENROLL = "com.jarvis.edge.action.ENROLL"
         const val ACTION_SET_VOICE = "com.jarvis.edge.action.SET_VOICE"
+        const val ACTION_SETUP_RETRY = "com.jarvis.edge.action.SETUP_RETRY"
+        const val ACTION_SETUP_START_WITHOUT = "com.jarvis.edge.action.SETUP_START_WITHOUT"
+        const val ACTION_SETUP_WIFI_ONLY = "com.jarvis.edge.action.SETUP_WIFI_ONLY"
+        private const val EXTRA_ON = "on"
+
+        private val _setup = MutableStateFlow<SetupProgress?>(null)
+        /** Progress of the first model setup; null when the service is not in setup mode. */
+        val setup: StateFlow<SetupProgress?> = _setup.asStateFlow()
+
+        /** Re-runs a failed setup item by [id] (an empty id re-checks free space). */
+        fun setupRetry(context: Context, id: String) {
+            context.startService(
+                Intent(context, JarvisService::class.java).apply {
+                    action = ACTION_SETUP_RETRY
+                    putExtra(EXTRA_TEXT, id)
+                },
+            )
+        }
+
+        /** Ends the first setup without the extras; the rest is fetched in the background later. */
+        fun setupStartWithout(context: Context) {
+            context.startService(Intent(context, JarvisService::class.java).apply { action = ACTION_SETUP_START_WITHOUT })
+        }
+
+        /** Turns the Wi-Fi-only switch for setup downloads on or off. */
+        fun setupWifiOnly(context: Context, on: Boolean) {
+            context.startService(
+                Intent(context, JarvisService::class.java).apply {
+                    action = ACTION_SETUP_WIFI_ONLY
+                    putExtra(EXTRA_ON, on)
+                },
+            )
+        }
 
         fun currentVoiceId(context: Context): String =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("voice", null)

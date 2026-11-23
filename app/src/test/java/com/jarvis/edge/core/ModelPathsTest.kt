@@ -101,4 +101,27 @@ class ModelPathsTest {
         File(llm, ModelPaths.DEFAULT_LLM_MODEL).writeBytes(byteArrayOf(1))
         assertEquals(ModelPaths.DEFAULT_LLM_MODEL, ModelPaths.resolveLlmFileName(tempDir))
     }
+
+    @Test
+    fun `rootFor release ignores the override file`(@TempDir tempDir: File) {
+        val override = File(tempDir, "model_root.txt").apply { writeText("/x") }
+        assertEquals(File(ModelPaths.DEFAULT_ROOT), ModelPaths.rootFor(false, override))
+    }
+
+    @Test
+    fun `rootFor debug uses the override path`(@TempDir tempDir: File) {
+        val override = File(tempDir, "model_root.txt").apply { writeText("/sdcard/Jarvis/models-dltest\n") }
+        assertEquals(File("/sdcard/Jarvis/models-dltest"), ModelPaths.rootFor(true, override))
+    }
+
+    @Test
+    fun `rootFor debug without the file uses the default`(@TempDir tempDir: File) {
+        assertEquals(File(ModelPaths.DEFAULT_ROOT), ModelPaths.rootFor(true, File(tempDir, "missing.txt")))
+    }
+
+    @Test
+    fun `rootFor debug ignores a relative path`(@TempDir tempDir: File) {
+        val override = File(tempDir, "model_root.txt").apply { writeText("models-dltest") }
+        assertEquals(File(ModelPaths.DEFAULT_ROOT), ModelPaths.rootFor(true, override))
+    }
 }
