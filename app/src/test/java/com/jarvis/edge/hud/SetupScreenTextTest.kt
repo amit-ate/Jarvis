@@ -36,6 +36,25 @@ class SetupScreenTextTest {
     }
 
     @Test
+    fun `size text is decimal MB under 1000 MB and GB with two decimals above`() {
+        assertEquals("1 MB", sizeText(643_854L))
+        assertEquals("412 MB", sizeText(412_000_000L))
+        assertEquals("1.07 GB", sizeText(1_066_227_232L))
+        assertEquals("1.00 GB", sizeText(999_600_000L))
+        assertEquals("0 MB", sizeText(0L))
+    }
+
+    @Test
+    fun `row size shows done over total while the item moves, and the total otherwise`() {
+        val total = 1_066_227_232L
+        assertEquals("412 MB / 1.07 GB", rowSizeText(item("qwen", ItemPhase.DOWNLOADING, bytes = 412_000_000L, size = total)))
+        assertEquals("412 MB / 1.07 GB", rowSizeText(item("qwen", ItemPhase.VERIFYING, bytes = 412_000_000L, size = total)))
+        assertEquals("1.07 GB", rowSizeText(item("qwen", ItemPhase.DONE, bytes = total, size = total)))
+        assertEquals("1.07 GB", rowSizeText(item("qwen", ItemPhase.QUEUED, bytes = 0L, size = total)))
+        assertEquals("1.07 GB", rowSizeText(item("qwen", ItemPhase.FAILED, bytes = 5L, size = total, reason = "HTTP 404")))
+    }
+
+    @Test
     fun `eta is minutes, under a minute, or empty when unknown`() {
         assertEquals("~9 min left", etaText(540L))
         assertEquals("<1 min left", etaText(30L))

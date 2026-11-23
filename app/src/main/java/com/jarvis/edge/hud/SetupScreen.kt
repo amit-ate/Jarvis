@@ -48,6 +48,24 @@ private const val BYTES_PER_GB = 1_000_000_000.0
 fun gbText(done: Long, total: Long): String =
     String.format(Locale.US, "%.1f of %.1f GB", done / BYTES_PER_GB, total / BYTES_PER_GB)
 
+/** "412 MB" under a thousand decimal megabytes (at least "1 MB" for anything non-zero), else "1.07 GB". */
+fun sizeText(bytes: Long): String {
+    val mb = Math.round(bytes / 1_000_000.0)
+    return when {
+        bytes > 0L && mb == 0L -> "1 MB"
+        mb < 1_000L -> "$mb MB"
+        else -> String.format(Locale.US, "%.2f GB", bytes / BYTES_PER_GB)
+    }
+}
+
+/**
+ * The size shown at the right of a module row: "done / total" while the item moves, else the total alone.
+ */
+fun rowSizeText(item: ItemProgress): String = when (item.phase) {
+    ItemPhase.DOWNLOADING, ItemPhase.VERIFYING, ItemPhase.UNPACKING -> "${sizeText(item.bytes)} / ${sizeText(item.size)}"
+    ItemPhase.DONE, ItemPhase.QUEUED, ItemPhase.FAILED -> sizeText(item.size)
+}
+
 /** "4.0 GB free": the free space on the model volume. */
 fun freeText(bytes: Long): String = String.format(Locale.US, "%.1f GB free", bytes / BYTES_PER_GB)
 
@@ -233,6 +251,18 @@ private fun ItemRow(item: ItemProgress, onRetry: (String) -> Unit) {
                 color = if (item.phase == ItemPhase.QUEUED) Jx.TextFaint else Jx.Text,
                 fontSize = 14.sp,
                 modifier = Modifier.weight(1f),
+            )
+            Text(
+                rowSizeText(item),
+                color = when (item.phase) {
+                    ItemPhase.DONE -> Jx.Mint.copy(alpha = 0.6f)
+                    ItemPhase.QUEUED -> Jx.TextFaint
+                    else -> Jx.TextDim
+                },
+                fontFamily = Jx.Mono,
+                fontSize = 11.sp,
+                maxLines = 1,
+                modifier = Modifier.padding(start = 8.dp),
             )
             if (item.phase == ItemPhase.FAILED) {
                 PillButton("Retry", onClick = { onRetry(item.id) }, color = Jx.Red)
