@@ -46,9 +46,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.jarvis.edge.BuildConfig
 import com.jarvis.edge.core.AssistantState
+import com.jarvis.edge.core.ModelPaths
 import com.jarvis.edge.service.JarvisService
 import kotlinx.coroutines.delay
+import java.io.File
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -92,6 +95,7 @@ class HudActivity : ComponentActivity(), SensorEventListener {
             val micLevel by JarvisService.micLevel.collectAsState()
             val searching by JarvisService.searching.collectAsState()
             val activeExpert by JarvisService.activeExpert.collectAsState()
+            val setup by JarvisService.setup.collectAsState()
             val mindState by MindUiBridge.state.collectAsState()
             val fillWhite by JarvisService.screenFillWhite.collectAsState()
             val brightnessOverride by JarvisService.brightnessOverride.collectAsState()
@@ -141,8 +145,19 @@ class HudActivity : ComponentActivity(), SensorEventListener {
                 else -> null
             }
 
+            val setupNow = setup
             if (fillWhite) {
                 Box(Modifier.fillMaxSize().background(Color.White).clickable { JarvisService.clearScreenFill() })
+            } else if (setupNow != null) {
+                JarvisTheme {
+                    SetupScreen(
+                        progress = setupNow,
+                        freeBytes = freeBytesFor(ModelPaths.rootFor(BuildConfig.DEBUG)),
+                        onRetry = { JarvisService.setupRetry(this@HudActivity, it) },
+                        onStartWithout = { JarvisService.setupStartWithout(this@HudActivity) },
+                        onWifiOnly = { JarvisService.setupWifiOnly(this@HudActivity, it) },
+                    )
+                }
             } else {
                 JarvisTheme {
                     HomeHud(
@@ -192,6 +207,13 @@ class HudActivity : ComponentActivity(), SensorEventListener {
     private fun restartJarvis() {
         stopService(Intent(this, JarvisService::class.java))
         window.decorView.postDelayed({ startJarvisService() }, 1_500L)
+    }
+
+    /** Free space on the volume holding [root]; the nearest existing folder answers while the root itself is not made yet. */
+    private fun freeBytesFor(root: File): Long {
+        var dir: File? = root
+        while (dir != null && !dir.exists()) dir = dir.parentFile
+        return dir?.usableSpace ?: 0L
     }
 
     private fun refreshSafetyState() {
