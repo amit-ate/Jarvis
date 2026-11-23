@@ -491,7 +491,9 @@ JNIEXPORT jlong JNICALL Java_com_jarvis_edge_brain_LlamaJniEngine_nativeLoad(
   llama_context_params cparams = llama_context_default_params();
   cparams.n_ctx = static_cast<uint32_t>(std::max<jint>(256, contextTokens));
   cparams.n_batch = 512;
-  cparams.n_ubatch = 512;
+  // 128 reads prompts as fast as 512 on the Pad (28.8 tok/s either way) but the compute buffer drops from 314 MB to
+  // 78 MB with Qwen2.5 1.5B, whose 152k-word vocabulary makes every batch row cost ~0.6 MB of logits.
+  cparams.n_ubatch = 128;
   // Placeholder counts; the tuned ones are applied with the threadpools below.
   cparams.n_threads = 3;
   cparams.n_threads_batch = 4;

@@ -232,6 +232,16 @@ class JarvisService : Service() {
         return START_STICKY
     }
 
+    /** Logs native heap, resident and swapped memory after a model loads (tag JarvisMem). */
+    private fun memMark(label: String) {
+        val status = runCatching { File("/proc/self/status").readLines() }.getOrDefault(emptyList())
+        fun mb(key: String) = status.firstOrNull { it.startsWith(key) }?.filter { it.isDigit() }?.toLongOrNull()?.div(1024) ?: -1
+        android.util.Log.i(
+            "JarvisMem",
+            "$label: nativeHeap=${android.os.Debug.getNativeHeapAllocatedSize() / (1024 * 1024)}MB rss=${mb("VmRSS:")}MB swap=${mb("VmSwap:")}MB",
+        )
+    }
+
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         if (level >= TRIM_MEMORY_RUNNING_LOW) {
@@ -328,6 +338,14 @@ class JarvisService : Service() {
                 )
             }
 
+            // Keep llama.cpp's repacked (fast-layout) weights in a file mapping instead of anonymous memory, so Android can
+            // drop and re-read those pages under memory pressure instead of swapping them to zram (where Q4 weights barely
+            // compress) and then killing Jarvis. Needs free space about the size of the chat model; falls back to RAM if not.
+            runCatching {
+                val repackDir = File(cacheDir, "llm-repack").apply { mkdirs() }
+                android.system.Os.setenv("GGML_REPACK_FILE_DIR", repackDir.absolutePath, true)
+            }.onFailure { android.util.Log.w("JarvisMem", "could not enable file-backed weights", it) }
+
             // Optional GGUF embedding model under /sdcard/Jarvis/models/embed/*.gguf; fallback to deterministic 128-d vector.
             val embedFile = File(paths.root, "embed").listFiles { f -> f.isFile && f.extension == "gguf" }?.firstOrNull()
             val ggufEmbedder = if (embedFile != null) {
@@ -344,6 +362,7 @@ class JarvisService : Service() {
                     VectorMath.simpleHashEmbed(text)
                 }
             }
+            memMark("embedder")
             var loadedEmbedDim = 0
             if (ggufEmbedder != null && ggufEmbedder.isLoaded) {
                 loadedEmbedDim = runCatching { ggufEmbedder.embed("jarvis").size }.getOrDefault(0)
@@ -373,6 +392,7 @@ class JarvisService : Service() {
                 numThreads = 2,
                 onInitThread = { SimdAudio.pinCurrentThreadToLittleCores() },
             ).also { wakeWord = it }
+            memMark("vad+kws")
             val loggingVad = object : com.jarvis.edge.audio.Vad {
                 override fun isSpeech(frame: FloatArray): Boolean =
                     vadInstance.isSpeech(frame).also { if (it) diagVadFrames++ }
@@ -390,6 +410,7 @@ class JarvisService : Service() {
                 hotwordsScore = 2.0f,
             ).also { liveTranscriber = it }
 
+            memMark("live asr ${liveAsr.dir.name}")
             val accurateAsr = ModelPaths.resolveAccurateAsr(paths.root)
             fun loadAccurate(asr: AccurateAsr): Transcriber = when (asr.kind) {
                 AccurateAsr.Kind.TRANSDUCER -> SherpaTransducerTranscriber(
@@ -414,6 +435,7 @@ class JarvisService : Service() {
                     }
             }?.also { accurateTranscriber = it }
             android.util.Log.i("JarvisVoice", "accurate ASR: $loadedAsr (${accurate?.javaClass?.simpleName})")
+            memMark("accurate asr $loadedAsr")
 
             val ttsSpeaker = SherpaSpeaker(
                 voice = com.jarvis.edge.core.Voices.resolve(
@@ -423,6 +445,7 @@ class JarvisService : Service() {
                 ttsDir = File(paths.root, "tts"),
                 cacheDir = File(cacheDir, "tts_cache"),
             ).also { speaker = it }
+            memMark("tts")
             launch(Dispatchers.IO) { runCatching { ttsSpeaker.prewarmFixedPhrases() } }
 
             TimerBroadcastReceiver.onTimerFired = { msg ->
@@ -449,6 +472,7 @@ class JarvisService : Service() {
                 startStatus = "Missing ${paths.llmRelative()} — basic commands only"
             }
 
+            memMark("llm ${paths.llmFileName}")
             val expertRouter = ExpertRouter.fromManifestFile(File(adaptersDir, "experts.json"), adaptersDir, steadyAdapters = true)
             fun applyModelVersionToRouter(version: ModelVersion?) {
                 val rawPath = version?.adapterPath?.takeIf { it.isNotBlank() }
