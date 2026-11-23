@@ -1,0 +1,108 @@
+From bd65777a4f7450dde399048e69818cde89b16e8b Mon Sep 17 00:00:00 2001
+From: amit <102742568+amit-ate@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 05:29:09 +0000
+Subject: [PATCH 2/3] ggml-cpu: back repacked weights with a file when
+ GGML_REPACK_FILE_DIR is set
+
+Repacked (CPU_REPACK) weights live in anonymous memory. On a 4 GB phone that
+memory can only go to zram, where Q4 weights barely compress (1.31 GB of RAM
+held 1.74 GB of swap on the Realme Pad), and the low-memory killer then ends
+the app. When GGML_REPACK_FILE_DIR names a writable directory, the buffer is a
+MAP_SHARED mapping of an unlinked, fully reserved (posix_fallocate) file in it
+instead: the kernel writes the pages back once and can drop and re-read them
+like the plain mmap'd model. Falls back to anonymous memory on any failure.
+
+Measured with Qwen2.5 1.5B Q4_0 on the Pad (Helio G80): same output, prompt
+29.1 vs 28.8 tok/s, generation 8.95 vs 8.92 tok/s; private memory of the
+process 109 MB instead of ~1 GB. Gemma 3 1B on a Redmi Note 5 Pro (SDM636)
+measured the same within noise when runs were alternated with cool-downs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ggml/src/ggml-cpu/repack.cpp | 62 +++++++++++++++++++++++++++++++++++-
+ 1 file changed, 61 insertions(+), 1 deletion(-)
+
+diff --git a/ggml/src/ggml-cpu/repack.cpp b/ggml/src/ggml-cpu/repack.cpp
+index 9282ca2..ca56a70 100644
+--- a/ggml/src/ggml-cpu/repack.cpp
++++ b/ggml/src/ggml-cpu/repack.cpp
+@@ -15,6 +15,14 @@
+ #include <cstring>
+ #include <cassert>
+ #include <cstdio>  // for GGML_ASSERT
++#include <cstdlib>
++#include <atomic>
++
++#if !defined(_WIN32)
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++#endif
+ 
+ #include "repack.h"
+ 
+@@ -5170,8 +5178,60 @@ static const char * ggml_backend_cpu_repack_buffer_type_get_name(ggml_backend_bu
+     GGML_UNUSED(buft);
+ }
+ 
++#if !defined(_WIN32)
++// Jarvis: repacked weights normally live in anonymous memory, which a low-RAM phone can only push to zram swap (quantized
++// weights barely compress there) before the low-memory killer ends the app. When GGML_REPACK_FILE_DIR names a writable
++// directory, the buffer is instead a shared mapping of an unlinked file in it: the kernel writes the pages back once and
++// can then drop them under pressure and re-read them later, like the plain mmap'd model, while keeping the fast layout.
++static void ggml_backend_cpu_repack_file_buffer_free(ggml_backend_buffer_t buffer) {
++    munmap(buffer->context, buffer->size);
++}
++
++static ggml_backend_buffer_t ggml_backend_cpu_repack_alloc_file_backed(size_t size) {
++    const char * dir = getenv("GGML_REPACK_FILE_DIR");
++    if (dir == nullptr || dir[0] == '\0' || size == 0) {
++        return nullptr;
++    }
++    static std::atomic<int> counter{0};
++    char path[1024];
++    snprintf(path, sizeof(path), "%s/ggml-repack-%d-%d.bin", dir, (int) getpid(), counter.fetch_add(1));
++    const int fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
++    if (fd < 0) {
++        GGML_LOG_WARN("%s: cannot create %s, using anonymous memory\n", __func__, path);
++        return nullptr;
++    }
++    unlink(path); // the mapping keeps the inode alive; nothing is left behind if the process dies
++    // Reserve the blocks now: writing to a sparse mapping on a full disk would crash with SIGBUS instead of failing here.
++    if (posix_fallocate(fd, 0, (off_t) size) != 0) {
++        GGML_LOG_WARN("%s: not enough space for %zu MiB in %s, using anonymous memory\n", __func__, size / (1024 * 1024), dir);
++        close(fd);
++        return nullptr;
++    }
++    void * data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++    close(fd);
++    if (data == MAP_FAILED) {
++        GGML_LOG_WARN("%s: mmap of %zu MiB failed, using anonymous memory\n", __func__, size / (1024 * 1024));
++        return nullptr;
++    }
++    ggml_backend_buffer_t buffer = ggml_backend_cpu_buffer_from_ptr(data, size);
++    if (buffer == nullptr) {
++        munmap(data, size);
++        return nullptr;
++    }
++    buffer->iface.free_buffer = ggml_backend_cpu_repack_file_buffer_free;
++    GGML_LOG_INFO("%s: %zu MiB of repacked weights backed by a file in %s\n", __func__, size / (1024 * 1024), dir);
++    return buffer;
++}
++#endif
++
+ static ggml_backend_buffer_t ggml_backend_cpu_repack_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
+-    ggml_backend_buffer_t buffer = ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
++    ggml_backend_buffer_t buffer = nullptr;
++#if !defined(_WIN32)
++    buffer = ggml_backend_cpu_repack_alloc_file_backed(size);
++#endif
++    if (buffer == nullptr) {
++        buffer = ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
++    }
+ 
+     if (buffer == nullptr) {
+         return nullptr;
+-- 
+2.54.0 (Apple Git-157)
+

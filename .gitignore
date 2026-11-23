@@ -11,3 +11,4 @@ bench/out-a73/
 .worktrees/
 .superpowers/
 __pycache__/
+bench/host-tools/

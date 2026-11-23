@@ -1,3 +1,19 @@
+From 1802895e906cf31e8f92c8cf99d2e97e7c1dabf4 Mon Sep 17 00:00:00 2001
+From: amit <102742568+amit-ate@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 15:09:16 +0000
+Subject: [PATCH 3/3] ggml-cpu: faster Q4_0/Q8_0 dot products on ARMv8.0
+ without sdot; keep mtmd threads on big cores
+
+On NEON cores without the dot-product extension (e.g. Cortex-A73/A53), fold four
+int8 products per int16 lane (smull + smlal + saddlp) and compute Q4_0 x Q8_0 in
+2x2 tiles so each unpacked block is reused. On Android arm64, let the multimodal
+thread pool run on cpus 4-7.
+---
+ ggml/src/ggml-cpu/arch/arm/quants.c | 88 ++++++++++++++++++++++++++++-
+ ggml/src/ggml-cpu/ggml-cpu.c        |  2 +-
+ tools/mtmd/mtmd-subcontext.cpp      |  6 ++
+ 3 files changed, 94 insertions(+), 2 deletions(-)
+
 diff --git a/ggml/src/ggml-cpu/arch/arm/quants.c b/ggml/src/ggml-cpu/arch/arm/quants.c
 index f16505b..927aadf 100644
 --- a/ggml/src/ggml-cpu/arch/arm/quants.c
@@ -145,3 +161,23 @@ index a76af84..79df542 100644
          .nrows                    = 2,
  #else
          .nrows                    = 1,
+diff --git a/tools/mtmd/mtmd-subcontext.cpp b/tools/mtmd/mtmd-subcontext.cpp
+index 7f13b7f..3f9c288 100644
+--- a/tools/mtmd/mtmd-subcontext.cpp
++++ b/tools/mtmd/mtmd-subcontext.cpp
+@@ -45,6 +45,12 @@ static std::shared_ptr<ggml_threadpool> mtmd_threadpool_init(int n_threads) {
+     }
+     ggml_threadpool_params tpp = ggml_threadpool_params_default(n_threads);
+     tpp.poll = 0; // the pool is idle most of the time, don't take CPU away from the text model
++    tpp.strict_cpu = false;
++#if defined(__ANDROID__) && defined(__aarch64__)
++    for (int cpu = 4; cpu <= 7 && cpu < GGML_MAX_N_THREADS; ++cpu) {
++        tpp.cpumask[cpu] = true;
++    }
++#endif
+     ggml_threadpool_t threadpool = new_fn(&tpp);
+     if (!threadpool) {
+         throw std::runtime_error("failed to create threadpool");
+-- 
+2.54.0 (Apple Git-157)
+
