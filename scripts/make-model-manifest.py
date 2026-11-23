@@ -172,12 +172,15 @@ def archive_listing(path, spec):
     must, total = [], 0
     with tarfile.open(path, 'r:bz2') as tar:
         for member in tar.getmembers():
-            parts = member.name.split('/', 1)
-            if len(parts) < 2 or not parts[1]:
-                continue  # the top folder itself
-            rel = parts[1].rstrip('/')
-            if '..' in rel.split('/') or rel.startswith('/'):
+            # Same rule as the app's Unpacker.stripTopFolder: "" and "." components vanish, then the top folder goes.
+            if member.name.startswith('/'):
                 raise RuntimeError(f'unsafe path in {path}: {member.name}')
+            parts = [p for p in member.name.split('/') if p not in ('', '.')]
+            if '..' in parts:
+                raise RuntimeError(f'unsafe path in {path}: {member.name}')
+            if len(parts) < 2:
+                continue  # the top folder itself
+            rel = '/'.join(parts[1:])
             if any(rel == d or rel.startswith(d + '/') for d in spec['drop']):
                 continue
             if not member.isreg():

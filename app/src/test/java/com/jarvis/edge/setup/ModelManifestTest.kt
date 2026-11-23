@@ -2,6 +2,7 @@ package com.jarvis.edge.setup
 
 import com.jarvis.edge.core.ModelPaths
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -68,5 +69,34 @@ class ModelManifestTest {
         assertTrue(ModelPaths(File("x")).speechRequired().all { it in required })
         assertTrue(m.items.any { it.required && it.dest == "llm/qwen2.5-1.5b-instruct-q4_0.gguf" })
         assertEquals(15, m.items.size)
+    }
+
+    @Test
+    fun `parakeet must-exist paths are relative to the item folder`() {
+        val parakeet = ModelManifest.parse(File("src/main/assets/models/manifest.json").readText())
+            .items.single { it.id == "asr-parakeet" }
+        assertTrue(
+            parakeet.mustExist.containsAll(
+                listOf(
+                    "asr-parakeet/encoder.int8.onnx",
+                    "asr-parakeet/decoder.int8.onnx",
+                    "asr-parakeet/joiner.int8.onnx",
+                    "asr-parakeet/tokens.txt",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `no archive must-exist path keeps its unstripped archive folder`() {
+        val archives = ModelManifest.parse(File("src/main/assets/models/manifest.json").readText())
+            .items.filter { it.kind == ItemKind.TAR_BZ2 }
+        assertTrue(archives.isNotEmpty())
+        for (item in archives) {
+            for (path in item.mustExist) {
+                val second = path.split('/').getOrNull(1).orEmpty()
+                assertFalse(second.startsWith("sherpa-onnx-") || second.startsWith("vits-piper-"), "${item.id}: $path")
+            }
+        }
     }
 }

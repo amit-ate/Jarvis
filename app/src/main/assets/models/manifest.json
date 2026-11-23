@@ -104,12 +104,12 @@
       "kind": "tar.bz2",
       "label": "Accurate hearing",
       "mustExist": [
-        "asr-parakeet/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8/decoder.int8.onnx",
-        "asr-parakeet/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8/encoder.int8.onnx",
-        "asr-parakeet/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8/joiner.int8.onnx",
-        "asr-parakeet/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8/test_wavs/0.wav",
-        "asr-parakeet/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8/test_wavs/en-english.wav",
-        "asr-parakeet/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8/tokens.txt"
+        "asr-parakeet/decoder.int8.onnx",
+        "asr-parakeet/encoder.int8.onnx",
+        "asr-parakeet/joiner.int8.onnx",
+        "asr-parakeet/test_wavs/0.wav",
+        "asr-parakeet/test_wavs/en-english.wav",
+        "asr-parakeet/tokens.txt"
       ],
       "overlay": [],
       "required": false,
