@@ -1,6 +1,37 @@
 package com.jarvis.edge.core
 
 class SentenceSplitter(private val splitClauses: Boolean = false) {
+    companion object {
+        /**
+         * Longest piece handed to the voice in one go. Piper/VITS keeps working memory sized to the longest piece it has
+         * spoken (on the Pad +128 MB for 85 characters, on the Redmi +294 MB for ~150), so this caps that memory.
+         */
+        const val MAX_TTS_CHARS = 70
+        private const val MIN_CLAUSE_PIECE = 15
+
+        /** Cuts [text] into pieces of at most [maxChars] at a clause break (, ; :) if possible, else at a space. */
+        fun ttsChunks(text: String, maxChars: Int = MAX_TTS_CHARS): List<String> {
+            var rest = text.trim().replace(Regex("\\s+"), " ")
+            val out = ArrayList<String>()
+            while (rest.length > maxChars) {
+                var cut = -1
+                for (i in minOf(maxChars - 1, rest.length - 2) downTo MIN_CLAUSE_PIECE) {
+                    if ((rest[i] == ',' || rest[i] == ';' || rest[i] == ':') && rest[i + 1] == ' ') {
+                        cut = i + 1
+                        break
+                    }
+                }
+                if (cut < 0) cut = rest.lastIndexOf(' ', maxChars).takeIf { it > 0 } ?: -1
+                if (cut < 0) cut = rest.indexOf(' ') // a single word longer than the cap stays whole
+                if (cut <= 0) break
+                out.add(rest.substring(0, cut).trim())
+                rest = rest.substring(cut).trim()
+            }
+            if (rest.isNotEmpty()) out.add(rest)
+            return out
+        }
+    }
+
     private val buf = StringBuilder()
 
     fun push(token: String): List<String> {

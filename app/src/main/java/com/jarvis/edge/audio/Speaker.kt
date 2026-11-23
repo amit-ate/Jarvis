@@ -99,7 +99,14 @@ class SherpaSpeaker(
         val clean = sentence.trim()
         if (clean.isEmpty()) return@withContext
         stopped = false
+        // Long sentences are spoken in short pieces: the voice engine keeps memory sized to the longest piece it made.
+        for (piece in com.jarvis.edge.core.SentenceSplitter.ttsChunks(clean)) {
+            if (stopped) break
+            speakPiece(piece)
+        }
+    }
 
+    private fun speakPiece(clean: String) {
         val cached = cacheFile(clean)
         val (sampleRate, pcm) = if (cached.exists()) {
             readPcmCache(cached)
@@ -112,7 +119,7 @@ class SherpaSpeaker(
             audio.sampleRate to shorts
         }
 
-        if (stopped || pcm.isEmpty()) return@withContext
+        if (stopped || pcm.isEmpty()) return
         playBlocking(sampleRate, pcm)
     }
 
