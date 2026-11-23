@@ -54,6 +54,8 @@ class Installer(
     private var finished = false
     private var canStartWithout = false
     private var lastPublishMs = 0L
+    private var receivedBytes = 0L
+    private var transferReported = 0L
     private var rateBytes = 0L
     private var rateSinceMs = 0L
     private var bytesPerSec = 0L
@@ -139,7 +141,7 @@ class Installer(
         var failures = 0
         while (true) {
             awaitNetwork()
-            setItem(item, ItemPhase.DOWNLOADING, bytes = minOf(part.length(), item.size))
+            startTransfer(item, minOf(part.length(), item.size))
             val result = fetchWhileOnline(item, part)
             if (result == null) continue // left the network mid-transfer: not an attempt, the part is kept
             if (result is FetchResult.Failed) {
@@ -254,6 +256,8 @@ class Installer(
         blockedBy = null
         finished = false
         canStartWithout = false
+        receivedBytes = 0L
+        transferReported = 0L
         rateBytes = 0L
         rateSinceMs = clockMs()
         bytesPerSec = 0L
@@ -263,6 +267,10 @@ class Installer(
     /** Byte updates are throttled; a change of phase is always published. */
     @Synchronized
     private fun onBytes(item: ManifestItem, bytes: Long) {
+        // Only bytes that arrive over the network count toward the rate. A report below the last one means the
+        // transfer began again from zero, so the whole report is new.
+        receivedBytes += if (bytes >= transferReported) bytes - transferReported else bytes
+        transferReported = bytes
         val current = states.getValue(item.id)
         val phase = if (bytes >= item.size) ItemPhase.VERIFYING else ItemPhase.DOWNLOADING
         states[item.id] = current.copy(phase = phase, bytes = bytes)
@@ -280,14 +288,20 @@ class Installer(
         publish()
     }
 
+    /** Starts an attempt at [item]; [resumed] bytes are already on disk and are not counted as received. */
+    @Synchronized
+    private fun startTransfer(item: ManifestItem, resumed: Long) {
+        transferReported = resumed
+        setItem(item, ItemPhase.DOWNLOADING, bytes = resumed)
+    }
+
     @Synchronized
     private fun publish() {
         val now = clockMs()
         lastPublishMs = now
-        val done = states.values.sumOf { if (it.phase == ItemPhase.DONE) it.size else it.bytes }
         if (now - rateSinceMs >= RATE_WINDOW_MS) {
-            bytesPerSec = if (netState == NetState.ALLOWED) ((done - rateBytes) * 1000 / (now - rateSinceMs)).coerceAtLeast(0L) else 0L
-            rateBytes = done
+            bytesPerSec = if (netState == NetState.ALLOWED) ((receivedBytes - rateBytes) * 1000 / (now - rateSinceMs)).coerceAtLeast(0L) else 0L
+            rateBytes = receivedBytes
             rateSinceMs = now
         }
         _progress.value = SetupProgress(

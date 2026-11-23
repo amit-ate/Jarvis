@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -69,9 +70,10 @@ class InstallerTest {
         bundled: (String) -> ByteArray? = { null },
         freeBytes: (File) -> Long = { Long.MAX_VALUE },
         netPollMs: Long = 1_000L,
+        clockMs: () -> Long = System::currentTimeMillis,
     ) = Installer(
         root, ModelManifest(items), fetch, gate, bundled,
-        freeBytes = freeBytes, backoffMs = { 0L }, netPollMs = netPollMs,
+        freeBytes = freeBytes, clockMs = clockMs, backoffMs = { 0L }, netPollMs = netPollMs,
         unpackContext = Dispatchers.Unconfined,
     )
 
@@ -300,6 +302,35 @@ class InstallerTest {
         assertTrue(setup.await())
         assertEquals(listOf(url(c), url(d)), fetch.calls)
         assertTrue(installer.progress.value.items.all { it.phase == ItemPhase.DONE })
+    }
+
+    @Test
+    fun `rate counts only bytes received this session, not finished or resumed parts`(@TempDir root: File) = runTest {
+        val done = file("done", size = 1_000L)
+        val fresh = file("fresh", size = 1_000L)
+        File(root, "done.part").writeBytes(ByteArray(1_000)) // complete from an earlier session: no network
+        val rates = mutableListOf<Long>()
+        lateinit var inst: Installer
+        val fetch = object : Fetch {
+            override suspend fun fetch(url: String, size: Long, sha256: String, part: File, onBytes: (Long) -> Unit): FetchResult {
+                if (url == done.url) {
+                    onBytes(size)
+                } else {
+                    onBytes(0L)
+                    delay(1_000L)
+                    onBytes(500L) // 500 bytes in the first second; the 1_000 bytes of "done" must not count
+                    rates += inst.progress.value.bytesPerSec
+                    part.writeBytes(ByteArray(1_000))
+                    onBytes(1_000L)
+                }
+                return FetchResult.Ok(part)
+            }
+        }
+        inst = installer(root, listOf(done, fresh), fetch, clockMs = { testScheduler.currentTime })
+
+        assertTrue(inst.runFirstSetup())
+
+        assertEquals(listOf(500L), rates)
     }
 
     @Test
