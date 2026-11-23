@@ -86,4 +86,19 @@ class ModelPathsTest {
         put("asr-custom/joiner.onnx")
         assertEquals(File(tempDir, "asr-custom"), ModelPaths.resolveAccurateAsr(tempDir)?.dir)
     }
+
+    @Test
+    fun `qwen 1_5b is chosen when gemma is absent`(@TempDir tempDir: File) {
+        val llm = File(tempDir, "llm").apply { mkdirs() }
+        File(llm, ModelPaths.QWEN_15B_MODEL).writeBytes(byteArrayOf(1))
+        assertEquals(ModelPaths.QWEN_15B_MODEL, ModelPaths.resolveLlmFileName(tempDir))
+    }
+
+    @Test
+    fun `gemma still wins when present`(@TempDir tempDir: File) {
+        val llm = File(tempDir, "llm").apply { mkdirs() }
+        File(llm, ModelPaths.QWEN_15B_MODEL).writeBytes(byteArrayOf(1))
+        File(llm, ModelPaths.DEFAULT_LLM_MODEL).writeBytes(byteArrayOf(1))
+        assertEquals(ModelPaths.DEFAULT_LLM_MODEL, ModelPaths.resolveLlmFileName(tempDir))
+    }
 }

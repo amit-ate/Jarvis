@@ -19,12 +19,7 @@ class ModelPaths(
 ) {
     fun require(relative: String): File {
         val file = File(root, relative)
-        val valid = if (file.isDirectory) {
-            file.list()?.isNotEmpty() == true
-        } else {
-            file.isFile && file.length() > 0L
-        }
-        if (!valid) {
+        if (!isPresent(file)) {
             throw MissingModelException(relative)
         }
         return file
@@ -71,15 +66,22 @@ class ModelPaths(
         const val DEFAULT_LLM_MODEL = "google_gemma-3-1b-it-Q4_0.gguf"
         /** Smaller fallback chat model, used when the default is not on the phone. */
         const val FALLBACK_LLM_MODEL = "qwen2.5-0.5b-instruct-q4_0.gguf"
+        /** Mid-size chat model, the fallback for a phone that holds it instead of Gemma. */
+        const val QWEN_15B_MODEL = "qwen2.5-1.5b-instruct-q4_0.gguf"
         /** Optional one-line file naming the chat model to load from llm/ (lets a bigger model be swapped in without a rebuild). */
         const val ACTIVE_MODEL_FILE = "llm/active_model.txt"
 
         /**
          * Chat models in order of preference, best first. Gemma 3 1B won the on-phone comparison (2026-11-21): 19/20
          * on harder questions vs 16/20 for Qwen2.5-0.5B, first word in ~1.5-3 s once warm; Qwen2.5-1.5B answered as
-         * well but took 4-14 s to start, too slow for voice.
+         * well but took 4-14 s to start, too slow for voice. Qwen2.5-1.5B comes next, so a phone that holds it
+         * resolves it even before active_model.txt exists.
          */
-        val PREFERRED_LLM_MODELS = listOf(DEFAULT_LLM_MODEL, FALLBACK_LLM_MODEL)
+        val PREFERRED_LLM_MODELS = listOf(DEFAULT_LLM_MODEL, QWEN_15B_MODEL, FALLBACK_LLM_MODEL)
+
+        /** Present = exists and non-empty: a file with bytes, or a folder with at least one entry. */
+        fun isPresent(file: File): Boolean =
+            if (file.isDirectory) file.list()?.isNotEmpty() == true else file.isFile && file.length() > 0L
 
         /**
          * Accurate recognisers in order of preference: a model fine-tuned on the user's voice (tools/voice-train), then
