@@ -331,7 +331,7 @@ class JarvisService : Service() {
         if (voiceJob?.isActive == true) return
         voiceJob = serviceScope.launch {
             val modelRoot = ModelPaths.rootFor(BuildConfig.DEBUG)
-            checkSetup(modelRoot)
+            if (!checkSetup(modelRoot)) return@launch
             val paths = ModelPaths(modelRoot, ModelPaths.resolveLlmFileName(modelRoot))
             android.util.Log.i("JarvisBrain", "chat model: ${paths.llmFileName} (template ${PromptBuilder.templateFor(paths.llmFileName)})")
             val missingSpeech = paths.missingSpeech()
@@ -1533,14 +1533,15 @@ class JarvisService : Service() {
 
     /**
      * Runs the first setup when the basics are missing, or resumes the extras after "Start without it". If the bundled
-     * manifest cannot be read, the check is skipped and the voice pipeline starts as it always did.
+     * manifest cannot be read, the check is skipped and the voice pipeline starts as it always did. Returns false when
+     * the voice pipeline must not start (a first setup failed and the basics are still missing).
      */
-    private suspend fun checkSetup(modelRoot: File) {
+    private suspend fun checkSetup(modelRoot: File): Boolean {
         val planner = try {
             SetupPlanner(modelRoot, loadManifest())
         } catch (e: Exception) {
             android.util.Log.e("JarvisSetup", "model manifest unreadable; skipping the setup check", e)
-            return
+            return true
         }
         val downloader = Downloader()
         val installer = Installer(
@@ -1552,17 +1553,20 @@ class JarvisService : Service() {
         )
         setupInstaller = installer
         if (planner.needsSetup()) {
-            runFirstSetup(installer, planner)
+            return runFirstSetup(installer, planner)
         } else if (planner.marker() == SetupMarker.EXTRAS_PENDING) {
             startExtrasWatch(installer, planner)
         }
+        return true
     }
 
     /**
      * Runs the first setup while the screen shows [setup] and the notification shows the percentage. Returns when the
-     * must-haves are in place (or the user chose "Start without it"); the voice pipeline then starts as usual.
+     * must-haves are in place (or the user chose "Start without it"); the voice pipeline then starts as usual. If a file
+     * could not be written, the error is logged: the setup screen stays up while the basics are missing (returns false),
+     * otherwise the voice pipeline starts as usual.
      */
-    private suspend fun runFirstSetup(installer: Installer, planner: SetupPlanner) {
+    private suspend fun runFirstSetup(installer: Installer, planner: SetupPlanner): Boolean {
         updateState(AssistantState.IDLE, "Setting up")
         var shownPercent = -1
         val mirror = serviceScope.launch {
@@ -1575,13 +1579,22 @@ class JarvisService : Service() {
                 }
             }
         }
+        var failed = false
         try {
             installer.runFirstSetup()
+        } catch (e: IOException) {
+            failed = true
+            android.util.Log.e("JarvisSetup", "first setup could not save its files", e)
         } finally {
             mirror.cancelAndJoin()
+            if (!failed) _setup.value = null
+        }
+        if (failed) {
+            if (planner.needsSetup()) return false
             _setup.value = null
         }
         if (planner.marker() == SetupMarker.EXTRAS_PENDING) startExtrasWatch(installer, planner)
+        return true
     }
 
     /**
