@@ -169,3 +169,20 @@ manifest or kept in sync by a test.
 - If `/sdcard/Jarvis/models` is not usable on the Pixel 7a's newer Android, the device test will show it and it is
   handled then (likely low risk: targetSdk 28 with legacy storage permissions already requested in `HudActivity`).
 - The debug model-root override (for the Redmi test folder) stays debug-only unless the Pixel test forces otherwise.
+
+## Device test (Redmi Note 5 Pro, 2026-11-23)
+
+Run into a separate folder (`/sdcard/Jarvis/models-dltest`, debug override) on home Wi-Fi.
+
+- Full first setup: 15 modules, 2.4 GB on disk, about 14 minutes from an empty folder (including the restarts below).
+  Download runs at about 15 MB/s; unpacking each .tar.bz2 takes 40–100 s on this phone and is now the slowest part.
+- Found and fixed: the Parakeet archive's entries start with `./`, so the manifest listed its files one folder too
+  deep; every install failed its check and was downloaded 3 times. The manifest script now drops `.` like the app does,
+  and a test checks every archive's files land where Jarvis looks for them.
+- Resume: app force-stopped during Qwen2.5 1.5B at 380 MB; after restart it continued from 380 MB (719 MB 20 s later),
+  and the screen kept the finished modules (6 of 15, 43%).
+- Wi-Fi off: screen showed OFFLINE and the download paused at 1.00 GB; Wi-Fi on: it resumed and finished.
+- Finished: `active_model.txt` = `qwen2.5-1.5b-instruct-q4_0.gguf`, adapters and `kws/keywords.txt` copied, no
+  `.part`/`.tmp`/`.setup-state` left; Jarvis started and loaded Qwen2.5 1.5B.
+- Untouched: with the override removed, the Redmi started normally on Gemma 3 1B with no setup screen, and a hash of the
+  listing of `/sdcard/Jarvis/models` was identical before and after.
