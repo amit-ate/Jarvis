@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERIAL="${1:-$ANDROID_SERIAL}"
+SERIAL="${1:-${ANDROID_SERIAL:-}}"
 
 ALL_PACKAGES=(
   com.amazon.appmanager
@@ -57,7 +57,7 @@ ALL_PACKAGES=(
 )
 
 for pkg in "${ALL_PACKAGES[@]}"; do
-  inst=$(adb -s "$SERIAL" shell cmd package install-existing "$pkg" 2>&1 || true)
-  enab=$(adb -s "$SERIAL" shell pm enable "$pkg" 2>&1 || true)
+  inst=$(adb ${SERIAL:+-s "$SERIAL"} shell cmd package install-existing "$pkg" 2>&1 || true)
+  enab=$(adb ${SERIAL:+-s "$SERIAL"} shell pm enable "$pkg" 2>&1 || true)
   echo "$pkg -> install-existing: $inst | enable: $enab"
 done

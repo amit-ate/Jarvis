@@ -2,8 +2,8 @@
 # Non-destructive ADB hardware & AI accelerator probe for Xiaomi Redmi Note 5 Pro (whyred / SDM636).
 set -uo pipefail
 
-SERIAL="${1:-${SERIAL:-$ANDROID_SERIAL}}"
-ADB="adb -s $SERIAL"
+SERIAL="${1:-${SERIAL:-${ANDROID_SERIAL:-}}}"
+ADB="adb${SERIAL:+ -s $SERIAL}"
 
 if ! command -v adb >/dev/null 2>&1; then
   echo "ERROR: adb not found in PATH" >&2

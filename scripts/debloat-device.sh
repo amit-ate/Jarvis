@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERIAL="${1:-$ANDROID_SERIAL}"
+SERIAL="${1:-${ANDROID_SERIAL:-}}"
 
 STAGE1_UNINSTALL=(
   com.amazon.appmanager
@@ -42,12 +42,12 @@ STAGE2_DISABLE_ONLY=(
 
 echo "=== Stage 1: Uninstalling optional third-party bloat for user 0 (MIUI core packages preserved) ==="
 for pkg in "${STAGE1_UNINSTALL[@]}"; do
-  out=$(adb -s "$SERIAL" shell pm uninstall -k --user 0 "$pkg" 2>&1 || true)
+  out=$(adb ${SERIAL:+-s "$SERIAL"} shell pm uninstall -k --user 0 "$pkg" 2>&1 || true)
   echo "$pkg -> $out"
 done
 
 echo "=== Stage 2: Disabling optional consumer apps only (no pm uninstall of MIUI system components) ==="
 for pkg in "${STAGE2_DISABLE_ONLY[@]}"; do
-  out=$(adb -s "$SERIAL" shell pm disable-user --user 0 "$pkg" 2>&1 || true)
+  out=$(adb ${SERIAL:+-s "$SERIAL"} shell pm disable-user --user 0 "$pkg" 2>&1 || true)
   echo "$pkg -> $out"
 done

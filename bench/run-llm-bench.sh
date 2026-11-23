@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SERIAL="${SERIAL:-$ANDROID_SERIAL}"
-ADB="adb -s $SERIAL"
+SERIAL="${SERIAL:-${ANDROID_SERIAL:-}}"
+ADB="adb${SERIAL:+ -s $SERIAL}"
 REMOTE_DIR="/data/local/tmp/jarvis"
 RESULTS_FILE="$ROOT_DIR/bench/results.md"
 MODELS_DIR="$ROOT_DIR/models/llm"

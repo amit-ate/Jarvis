@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERIAL="${1:-$ANDROID_SERIAL}"
-S="adb -s $SERIAL shell"
+SERIAL="${1:-${ANDROID_SERIAL:-}}"
+S="adb${SERIAL:+ -s $SERIAL} shell"
 
 $S cmd appops set com.google.android.googlequicksearchbox RECORD_AUDIO ignore 2>/dev/null || true
 $S am force-stop com.google.android.googlequicksearchbox 2>/dev/null || true

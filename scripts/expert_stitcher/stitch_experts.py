@@ -23,7 +23,9 @@ REQUIRED_DOMAINS = (
 MAX_JARVIS_RAM_BUDGET_MB = 2600
 
 
-DEFAULT_HOST_ADAPTERS_DIR = "/path/to/Jarvis/models/adapters"
+DEFAULT_HOST_ADAPTERS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models", "adapters"
+)
 
 
 def build_default_manifest() -> Dict[str, Any]:

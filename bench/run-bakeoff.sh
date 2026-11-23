@@ -2,12 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SERIAL="${SERIAL:-$ANDROID_SERIAL}"
-ADB="adb -s $SERIAL"
+SERIAL="${SERIAL:-${ANDROID_SERIAL:-}}"
+ADB="adb${SERIAL:+ -s $SERIAL}"
 REMOTE_DIR="/data/local/tmp/jarvis"
 COOLDOWN_SECS="${COOLDOWN_SECS:-10}"
 
-JARVIS_HOME="/path/to/Jarvis"
+JARVIS_HOME="$ROOT_DIR"
 if [ -x "${LLAMA_BENCH_BIN:-}" ]; then
   BIN_LOCAL="$LLAMA_BENCH_BIN"
 elif [ -x "$ROOT_DIR/bench/out/bin/llama-bench" ]; then

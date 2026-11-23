@@ -18,6 +18,7 @@ import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
@@ -260,7 +261,7 @@ def inspect_gguf_compatibility(base_path: str, expert_path: str) -> Dict[str, An
 
 
 def emit_llama_commands(
-    base_model: str = "/path/to/Jarvis/models/llm/qwen2.5-0.5b-instruct-q4_0.gguf",
+    base_model: str = os.path.join(REPO_ROOT, "models", "llm", "qwen2.5-0.5b-instruct-q4_0.gguf"),
     lora_path: str = "/sdcard/Jarvis/models/adapters/tool_use_r8.gguf",
     merged_out: str = "bench/out/qwen2.5-0.5b-tool-merged-f16.gguf",
     cvec_out: str = "bench/out/cvector_concise_direct.gguf",

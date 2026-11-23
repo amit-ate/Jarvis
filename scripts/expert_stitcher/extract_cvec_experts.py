@@ -16,9 +16,10 @@ from typing import Any, BinaryIO, Dict, List, Optional, Tuple
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DATASETS_DIR = os.path.join(SCRIPT_DIR, "cvec_datasets")
-DEFAULT_CVEC_BIN = "/path/to/Jarvis/bench/host-tools/bin/llama-cvector-generator"
-DEFAULT_BASE_MODEL = "/path/to/Jarvis/models/llm/qwen2.5-0.5b-instruct-q4_0.gguf"
-DEFAULT_OUT_DIR = "/path/to/Jarvis/models/adapters"
+REPO_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+DEFAULT_CVEC_BIN = os.path.join(REPO_ROOT, "bench", "host-tools", "bin", "llama-cvector-generator")
+DEFAULT_BASE_MODEL = os.path.join(REPO_ROOT, "models", "llm", "qwen2.5-0.5b-instruct-q4_0.gguf")
+DEFAULT_OUT_DIR = os.path.join(REPO_ROOT, "models", "adapters")
 
 ALL_EXPERTS = (
     "anti_echo_direct",

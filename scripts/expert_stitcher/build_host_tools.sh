@@ -2,13 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-if [ -f "$ROOT_DIR/third_party/llama.cpp/CMakeLists.txt" ]; then
-  LLAMA_DIR="$ROOT_DIR/third_party/llama.cpp"
-else
-  LLAMA_DIR="/path/to/Jarvis/third_party/llama.cpp"
-fi
+LLAMA_DIR="$ROOT_DIR/third_party/llama.cpp"
 
-HOST_TOOLS_DIR="${HOST_TOOLS_DIR:-/path/to/Jarvis/bench/host-tools}"
+HOST_TOOLS_DIR="${HOST_TOOLS_DIR:-$ROOT_DIR/bench/host-tools}"
 
 if [ ! -f "$LLAMA_DIR/CMakeLists.txt" ]; then
   echo "llama.cpp source not found at $LLAMA_DIR" >&2
