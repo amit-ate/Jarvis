@@ -276,6 +276,33 @@ class InstallerTest {
     }
 
     @Test
+    fun `progress covers items already present after a restart`(@TempDir root: File) = runTest {
+        val a = file("a"); val b = file("b"); val c = file("c"); val d = file("d")
+        File(root, "a").writeBytes(byteArrayOf(1))
+        File(root, "b").writeBytes(byteArrayOf(1))
+        val fetch = fetchFor(a, b, c, d)
+        val gate = FakeGate(NetState.WAITING_FOR_WIFI)
+        val installer = installer(root, listOf(a, b, c, d), fetch, gate, netPollMs = 1_000L)
+
+        val setup = async { installer.runFirstSetup() }
+        advanceTimeBy(1_500L)
+
+        assertTrue(fetch.calls.isEmpty())
+        val state = installer.progress.value
+        assertEquals(listOf("a", "b", "c", "d"), state.items.map { it.id })
+        assertEquals(listOf(ItemPhase.DONE, ItemPhase.DONE, ItemPhase.QUEUED, ItemPhase.QUEUED), state.items.map { it.phase })
+        assertTrue(state.fraction > 0f)
+        assertEquals(0.5f, state.fraction)
+
+        gate.current = NetState.ALLOWED
+        advanceUntilIdle()
+
+        assertTrue(setup.await())
+        assertEquals(listOf(url(c), url(d)), fetch.calls)
+        assertTrue(installer.progress.value.items.all { it.phase == ItemPhase.DONE })
+    }
+
+    @Test
     fun `keeps an existing active model file`(@TempDir root: File) = runTest {
         val qwen = file("qwen-1.5b", dest = "llm/${ModelPaths.QWEN_15B_MODEL}")
         File(root, qwen.dest).apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }

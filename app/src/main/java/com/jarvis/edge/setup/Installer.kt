@@ -30,7 +30,7 @@ fun interface Fetch {
  */
 class Installer(
     private val root: File,
-    manifest: ModelManifest,
+    private val manifest: ModelManifest,
     private val fetch: Fetch,
     private val net: NetworkGate,
     private val bundled: (String) -> ByteArray?,
@@ -61,7 +61,7 @@ class Installer(
     /** Fetches and installs everything missing. Returns true when done, or when the user chose "Start without it". */
     suspend fun runFirstSetup(): Boolean {
         planner.writeMarker(SetupMarker.RUNNING)
-        return runPlan(planner.pending(), interactive = true)
+        return runPlan(planner.pending(), interactive = true, shown = manifest.items)
     }
 
     /** Fetches the extras left after "Start without it". Does nothing unless the marker says extras are pending. */
@@ -83,9 +83,10 @@ class Installer(
     /** Republishes the current progress, so a changed [NetworkGate.wifiOnly] shows at once. Safe from any thread. */
     fun refresh() = publish()
 
-    private suspend fun runPlan(plan: List<ManifestItem>, interactive: Boolean): Boolean {
+    /** [shown] is what progress covers: items that are not in [plan] start as DONE. */
+    private suspend fun runPlan(plan: List<ManifestItem>, interactive: Boolean, shown: List<ManifestItem> = plan): Boolean {
         root.mkdirs()
-        beginRun(plan)
+        beginRun(shown, plan)
         var shortfall = spaceShortfall(plan)
         while (true) {
             if (shortfall == null) {
@@ -243,9 +244,13 @@ class Installer(
     private fun gb(bytes: Long): String = "%.1f".format(Locale.US, bytes / 1e9)
 
     @Synchronized
-    private fun beginRun(plan: List<ManifestItem>) {
+    private fun beginRun(shown: List<ManifestItem>, plan: List<ManifestItem>) {
         states.clear()
-        plan.forEach { states[it.id] = ItemProgress(it.id, it.label, it.required, ItemPhase.QUEUED, 0L, it.size) }
+        val queued = plan.map { it.id }.toSet()
+        shown.forEach {
+            val phase = if (it.id in queued) ItemPhase.QUEUED else ItemPhase.DONE
+            states[it.id] = ItemProgress(it.id, it.label, it.required, phase, bytes = if (phase == ItemPhase.DONE) it.size else 0L, size = it.size)
+        }
         blockedBy = null
         finished = false
         canStartWithout = false
