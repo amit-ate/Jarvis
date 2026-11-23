@@ -1,6 +1,7 @@
 package com.jarvis.edge.setup
 
 import com.jarvis.edge.core.ModelPaths
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
@@ -71,6 +72,7 @@ class InstallerTest {
     ) = Installer(
         root, ModelManifest(items), fetch, gate, bundled,
         freeBytes = freeBytes, backoffMs = { 0L }, netPollMs = netPollMs,
+        unpackContext = Dispatchers.Unconfined,
     )
 
     private fun marker(root: File) = File(root, SetupPlanner.MARKER_FILE).takeIf { it.exists() }?.readText()
@@ -355,6 +357,55 @@ class InstallerTest {
         }
     }
 
+    /** Each of the first [drops] calls reports a dropped connection: Wi-Fi is gone, and the transfer fails with a reset. */
+    private class DroppingFetch(private val gate: FakeGate, private var drops: Int) : Fetch {
+        val calls = mutableListOf<String>()
+
+        override suspend fun fetch(url: String, size: Long, sha256: String, part: File, onBytes: (Long) -> Unit): FetchResult {
+            calls += url
+            if (drops > 0) {
+                drops--
+                gate.current = NetState.WAITING_FOR_WIFI
+                return FetchResult.Failed("Connection reset", retryable = true)
+            }
+            part.parentFile?.mkdirs()
+            part.writeBytes(ByteArray(size.toInt()))
+            onBytes(size)
+            return FetchResult.Ok(part)
+        }
+    }
+
+    @Test
+    fun `dropped connections while Wi-Fi is gone are not counted as attempts`(@TempDir root: File) = runTest {
+        val a = file("a", size = 10L)
+        val gate = FakeGate(NetState.ALLOWED)
+        val fetch = DroppingFetch(gate, drops = 4)
+        val installer = installer(root, listOf(a), fetch, gate, netPollMs = 1_000L)
+
+        val setup = async { installer.runFirstSetup() }
+        advanceTimeBy(1_500L) // drop 1: the reset arrives and the network is already gone
+        repeat(3) {
+            assertEquals(NetState.WAITING_FOR_WIFI, installer.progress.value.net)
+            gate.current = NetState.ALLOWED
+            advanceTimeBy(1_500L) // each return to Wi-Fi retries once, and that retry drops again
+        }
+
+        // Four drops, more than MAX_ATTEMPTS, yet the item is still waiting, not failed.
+        assertEquals(4, fetch.calls.size)
+        assertEquals(NetState.WAITING_FOR_WIFI, installer.progress.value.net)
+        assertFalse(installer.progress.value.items.single().phase == ItemPhase.FAILED)
+        assertFalse(setup.isCompleted)
+
+        gate.current = NetState.ALLOWED
+        advanceUntilIdle()
+
+        assertTrue(setup.await())
+        assertEquals(5, fetch.calls.size)
+        assertEquals(10L, File(root, "a").length())
+        assertTrue(installer.progress.value.items.single().phase == ItemPhase.DONE)
+        assertNull(installer.progress.value.items.single().reason)
+    }
+
     @Test
     fun `leaving Wi-Fi cancels the transfer, resumes on Wi-Fi, and is not counted as an attempt`(@TempDir root: File) = runTest {
         val a = file("a", size = 100L)
@@ -373,6 +424,11 @@ class InstallerTest {
         assertEquals(NetState.WAITING_FOR_WIFI, installer.progress.value.net)
         assertEquals(ItemPhase.DOWNLOADING, installer.progress.value.items.single().phase)
         assertFalse(setup.isCompleted)
+        // Between the cancel and the resume: the partial bytes are kept, no retry has started, nothing failed.
+        assertEquals(50L, File(root, "a.part").length())
+        assertEquals(1, fetch.calls.size)
+        assertFalse(installer.progress.value.items.single().phase == ItemPhase.FAILED)
+        assertNull(installer.progress.value.items.single().reason)
 
         gate.current = NetState.ALLOWED
         advanceUntilIdle()
@@ -380,6 +436,7 @@ class InstallerTest {
         assertTrue(setup.await())
         assertEquals(2, fetch.calls.size)
         assertEquals(100L, File(root, "a").length())
+        assertNull(installer.progress.value.items.single().reason)
         assertEquals(NetState.ALLOWED, installer.progress.value.net)
         assertTrue(installer.progress.value.items.single().phase == ItemPhase.DONE)
     }

@@ -8,6 +8,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -82,6 +85,7 @@ import com.jarvis.edge.setup.AndroidNetworkGate
 import com.jarvis.edge.setup.Downloader
 import com.jarvis.edge.setup.Fetch
 import com.jarvis.edge.setup.Installer
+import com.jarvis.edge.setup.NetState
 import com.jarvis.edge.setup.ModelManifest
 import com.jarvis.edge.setup.SetupMarker
 import com.jarvis.edge.setup.SetupPlanner
@@ -142,6 +146,10 @@ class JarvisService : Service() {
     private var initiativeJob: Job? = null
     /** The first-setup (and extras) installer; the setup actions reach it through here. */
     @Volatile private var setupInstaller: Installer? = null
+    /** Network callback that wakes the extras loop; registered only while the marker says extras are pending. */
+    private var extrasCallback: ConnectivityManager.NetworkCallback? = null
+    /** Wake-ups for the extras loop. Conflated, so a network change during a run is not lost and runs never overlap. */
+    private var extrasKicks: Channel<Unit>? = null
     private val setupNet: AndroidNetworkGate by lazy {
         AndroidNetworkGate(this, getSharedPreferences(PREFS, Context.MODE_PRIVATE))
     }
@@ -285,6 +293,7 @@ class JarvisService : Service() {
         reflectionJob?.cancel()
         initiativeJob?.cancel()
         voiceJob?.cancel()
+        stopExtrasWatch()
         serviceScope.cancel()
         TimerBroadcastReceiver.onTimerFired = null
         runCatching { speaker?.release() }
@@ -1535,9 +1544,9 @@ class JarvisService : Service() {
         )
         setupInstaller = installer
         if (planner.needsSetup()) {
-            runFirstSetup(installer)
+            runFirstSetup(installer, planner)
         } else if (planner.marker() == SetupMarker.EXTRAS_PENDING) {
-            serviceScope.launch(Dispatchers.IO) { installer.runExtrasInBackground() }
+            startExtrasWatch(installer, planner)
         }
     }
 
@@ -1545,7 +1554,7 @@ class JarvisService : Service() {
      * Runs the first setup while the screen shows [setup] and the notification shows the percentage. Returns when the
      * must-haves are in place (or the user chose "Start without it"); the voice pipeline then starts as usual.
      */
-    private suspend fun runFirstSetup(installer: Installer) {
+    private suspend fun runFirstSetup(installer: Installer, planner: SetupPlanner) {
         updateState(AssistantState.IDLE, "Setting up")
         var shownPercent = -1
         val mirror = serviceScope.launch {
@@ -1564,6 +1573,49 @@ class JarvisService : Service() {
             mirror.cancelAndJoin()
             _setup.value = null
         }
+        if (planner.marker() == SetupMarker.EXTRAS_PENDING) startExtrasWatch(installer, planner)
+    }
+
+    /**
+     * After "Start without it": fetches the extras now, in the background, and again on each network change while the
+     * marker still says extras are pending. One run at a time; the callback is dropped once the marker is cleared.
+     */
+    @Synchronized
+    private fun startExtrasWatch(installer: Installer, planner: SetupPlanner) {
+        if (extrasKicks != null) return
+        val kicks = Channel<Unit>(Channel.CONFLATED)
+        extrasKicks = kicks
+        serviceScope.launch(Dispatchers.IO) {
+            for (kick in kicks) {
+                if (planner.marker() != SetupMarker.EXTRAS_PENDING) break
+                if (setupNet.state() != NetState.ALLOWED) continue
+                installer.runExtrasInBackground()
+                if (planner.marker() != SetupMarker.EXTRAS_PENDING) break
+            }
+            stopExtrasWatch()
+        }
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                kicks.trySend(Unit)
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                kicks.trySend(Unit)
+            }
+        }
+        extrasCallback = callback
+        getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(callback)
+        kicks.trySend(Unit)
+    }
+
+    @Synchronized
+    private fun stopExtrasWatch() {
+        extrasCallback?.let { callback ->
+            runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(callback) }
+        }
+        extrasCallback = null
+        extrasKicks?.close()
+        extrasKicks = null
     }
 
     private fun acquireWakeLock() {

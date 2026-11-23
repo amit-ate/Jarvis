@@ -3,17 +3,20 @@ package com.jarvis.edge.setup
 import com.jarvis.edge.core.AtomicFiles
 import com.jarvis.edge.core.ModelPaths
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.IOException
 import java.util.Locale
+import kotlin.coroutines.CoroutineContext
 
 /** Downloads one url to [part] and verifies it; [Downloader.fetch] fits. */
 fun interface Fetch {
@@ -35,6 +38,7 @@ class Installer(
     private val clockMs: () -> Long = System::currentTimeMillis,
     private val backoffMs: (attempt: Int) -> Long = { minOf(2_000L shl it, 60_000L) },
     private val netPollMs: Long = 2_000L,
+    private val unpackContext: CoroutineContext = Dispatchers.IO,
 ) {
     private val planner = SetupPlanner(root, manifest)
     private val states = linkedMapOf<String, ItemProgress>()
@@ -137,6 +141,14 @@ class Installer(
             setItem(item, ItemPhase.DOWNLOADING, bytes = minOf(part.length(), item.size))
             val result = fetchWhileOnline(item, part)
             if (result == null) continue // left the network mid-transfer: not an attempt, the part is kept
+            if (result is FetchResult.Failed) {
+                // A dropped Wi-Fi often fails the transfer before the watcher has noticed: look again before counting.
+                val now = net.state()
+                if (now != NetState.ALLOWED) {
+                    updateNet(now)
+                    continue // not an attempt: the part is kept and the loop waits for the network
+                }
+            }
             val failure = when (result) {
                 is FetchResult.Failed -> result
                 is FetchResult.Ok -> {
@@ -187,16 +199,18 @@ class Installer(
     }
 
     /** Moves the verified [part] into place. Returns null on success, else the failure to count as an attempt. */
-    private fun install(item: ManifestItem, part: File): FetchResult.Failed? = try {
-        setItem(item, ItemPhase.UNPACKING)
-        when (item.kind) {
-            ItemKind.FILE -> Unpacker.installFile(part, File(root, item.dest))
-            ItemKind.TAR_BZ2 -> Unpacker.installArchive(part, root, item, bundled)
+    private suspend fun install(item: ManifestItem, part: File): FetchResult.Failed? = withContext(unpackContext) {
+        try {
+            setItem(item, ItemPhase.UNPACKING)
+            when (item.kind) {
+                ItemKind.FILE -> Unpacker.installFile(part, File(root, item.dest))
+                ItemKind.TAR_BZ2 -> Unpacker.installArchive(part, root, item, bundled)
+            }
+            null
+        } catch (e: IOException) {
+            part.delete()
+            FetchResult.Failed(e.message ?: e.javaClass.simpleName, retryable = true)
         }
-        null
-    } catch (e: IOException) {
-        part.delete()
-        FetchResult.Failed(e.message ?: e.javaClass.simpleName, retryable = true)
     }
 
     private suspend fun awaitNetwork() {

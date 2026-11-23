@@ -124,7 +124,12 @@ class Downloader(
             conn.readTimeout = readTimeoutMs
             conn.setRequestProperty("Accept-Encoding", "identity")
             if (have > 0) conn.setRequestProperty("Range", "bytes=$have-")
-            val code = conn.responseCode
+            val code = try {
+                conn.responseCode
+            } catch (e: Throwable) {
+                conn.disconnect()
+                throw e
+            }
             if (code !in REDIRECT_CODES) return conn
             val location = conn.getHeaderField("Location")
             conn.disconnect()

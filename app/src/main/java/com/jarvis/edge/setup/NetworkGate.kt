@@ -14,9 +14,13 @@ interface NetworkGate {
 /** The phone's active network, read through ConnectivityManager. Not unit-tested (Android classes). */
 class AndroidNetworkGate(private val context: Context, private val prefs: SharedPreferences) : NetworkGate {
 
+    /** The switch, read from prefs once and then kept here; the download thread reads it through [state]. */
+    @Volatile private var wifiOnlyValue: Boolean? = null
+
     override var wifiOnly: Boolean
-        get() = prefs.getBoolean(PREF_WIFI_ONLY, true)
+        get() = wifiOnlyValue ?: prefs.getBoolean(PREF_WIFI_ONLY, true).also { wifiOnlyValue = it }
         set(value) {
+            wifiOnlyValue = value
             prefs.edit().putBoolean(PREF_WIFI_ONLY, value).apply()
         }
 
