@@ -43,13 +43,16 @@ class BrainEvolverTest {
         val ideal = SelfStateSnapshot(charging = true, healthLevelName = "NORMAL", learningPaused = false)
         assertTrue(evolver.canRunOvernight(ideal, isIdle = true))
         assertFalse(evolver.canRunOvernight(ideal, isIdle = false))
-        assertFalse(evolver.canRunOvernight(ideal.copy(charging = false), isIdle = true))
+        assertFalse(evolver.canRunOvernight(ideal.copy(charging = false, batteryPct = 49), isIdle = true))
+        // Unplugged overnight (the Pad sleeps on battery) is fine while the battery is at least half full.
+        assertTrue(evolver.canRunOvernight(ideal.copy(charging = false, batteryPct = 50), isIdle = true))
         assertFalse(evolver.canRunOvernight(ideal.copy(healthLevelName = "WARM"), isIdle = true))
         assertFalse(evolver.canRunOvernight(ideal.copy(learningPaused = true), isIdle = true))
 
         // Outside overnight window
         hour = 14
         assertFalse(evolver.canRunOvernight(ideal, isIdle = true, manualOverride = false))
+        assertFalse(evolver.canRunOvernight(ideal.copy(charging = false, batteryPct = 90), isIdle = true, manualOverride = false))
         // Manual override bypasses charging + hour, but still enforces idle, NORMAL thermal, and not paused
         assertTrue(evolver.canRunOvernight(ideal.copy(charging = false), isIdle = true, manualOverride = true))
         assertFalse(evolver.canRunOvernight(ideal.copy(learningPaused = true), isIdle = true, manualOverride = true))
@@ -344,5 +347,32 @@ class BrainEvolverTest {
             embedFn = { text -> VectorMath.simpleHashEmbed(text, dim = 384) },
         )
         assertEquals(0, secondRun)
+    }
+
+    @Test
+    fun `active model version follows the chat model actually loaded`() {
+        var now = 1_000L
+        val store = InMemoryMindStore(clockMs = { now })
+        // Fresh install: a base record for the loaded model.
+        val first = BrainEvolver.ensureActiveVersionFor(store, "gemma.gguf") { true }
+        assertEquals("gemma.gguf", first.baseModel)
+        assertTrue(first.active)
+        // Same model again: nothing new.
+        assertEquals(first.id, BrainEvolver.ensureActiveVersionFor(store, "gemma.gguf") { true }.id)
+        assertEquals(1, store.listModelVersions().size)
+
+        // Gemma evolved an adapter, then the phone switched to Qwen (seen on the Pad: the record still said Gemma).
+        now = 2_000L
+        val gemmaEvolved = store.recordModelVersion("gemma.gguf", "evolved_gemma.jvec", 0.9f, 0f, 1f, active = true)
+        now = 3_000L
+        val qwen = BrainEvolver.ensureActiveVersionFor(store, "qwen.gguf") { true }
+        assertEquals("qwen.gguf", qwen.baseModel)
+        assertEquals(null, qwen.adapterPath)
+        assertEquals(qwen.id, store.listModelVersions().single { it.active }.id)
+
+        // Back to Gemma: its newest usable evolved adapter comes back instead of starting over.
+        val back = BrainEvolver.ensureActiveVersionFor(store, "gemma.gguf") { it == "evolved_gemma.jvec" }
+        assertEquals(gemmaEvolved.id, back.id)
+        assertEquals(gemmaEvolved.id, store.listModelVersions().single { it.active }.id)
     }
 }

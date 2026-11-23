@@ -327,16 +327,9 @@ class JarvisService : Service() {
                 "Recovery: unclean=${recoveryReport.unclean} interrupted=${recoveryReport.interruptedEpisodes} " +
                     "orphans=${recoveryReport.orphansRemoved} temps=${recoveryReport.tempsRemoved}",
             )
-            if (mind.listModelVersions().isEmpty()) {
-                mind.recordModelVersion(
-                    baseModel = paths.llmFileName,
-                    adapterPath = null,
-                    evalScore = 0.0f,
-                    echoRate = 0.0f,
-                    toolAccuracy = 0.0f,
-                    active = true,
-                )
-            }
+            BrainEvolver.ensureActiveVersionFor(mind, paths.llmFileName) { rawPath ->
+                File(rawPath).let { if (it.isAbsolute) it else File(adaptersDir, rawPath) }.isFile
+            }.also { android.util.Log.i("JarvisMind", "active model version #${it.id} for ${it.baseModel} (adapter=${it.adapterPath})") }
 
             // Keep llama.cpp's repacked (fast-layout) weights in a file mapping instead of anonymous memory, so Android can
             // drop and re-read those pages under memory pressure instead of swapping them to zram (where Q4 weights barely
@@ -475,7 +468,9 @@ class JarvisService : Service() {
             memMark("llm ${paths.llmFileName}")
             val expertRouter = ExpertRouter.fromManifestFile(File(adaptersDir, "experts.json"), adaptersDir, steadyAdapters = true)
             fun applyModelVersionToRouter(version: ModelVersion?) {
-                val rawPath = version?.adapterPath?.takeIf { it.isNotBlank() }
+                // A vector trained on another chat model has the wrong shape and meaning for this one (e.g. a rollback in
+                // the Mind screen to a version from before a model switch).
+                val rawPath = version?.takeIf { it.baseModel == paths.llmFileName }?.adapterPath?.takeIf { it.isNotBlank() }
                 val vec = if (rawPath != null) {
                     val candidate = File(rawPath).let { if (it.isAbsolute) it else File(adaptersDir, rawPath) }
                     if (candidate.isFile) ControlVectorCodec.read(candidate) else null
@@ -970,7 +965,9 @@ class JarvisService : Service() {
                                 sb.append(piece)
                                 true
                             }
-                            sb.toString().trim()
+                            sb.toString().trim().also { raw ->
+                                android.util.Log.i("JarvisEval", "probe ${probe.id} (${probe.expectedType}/${probe.expectedTool}): \"${probe.prompt}\" -> \"${raw.take(160)}\"")
+                            }
                         },
                         isInterrupted = { _state.value != AssistantState.IDLE },
                     )

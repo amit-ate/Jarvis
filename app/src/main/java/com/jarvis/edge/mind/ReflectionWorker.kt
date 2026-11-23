@@ -293,10 +293,32 @@ class ReflectionWorker(
          */
         fun isAboutUser(fact: String, userLines: List<String>): Boolean {
             if (!MENTIONS_USER.containsMatchIn(fact)) return false
-            val said = userLines.joinToString(" ").lowercase().split(WORD_SPLIT).filter { it.isNotEmpty() }.toHashSet()
-            val content = fact.lowercase().split(WORD_SPLIT).filter { it.isNotEmpty() && it !in FACT_STOP_WORDS }
+            // The extraction model sometimes copies its "User: ..." input lines back; a question is never a fact.
+            if (looksLikeQuestion(fact.trim().replace(USER_LABEL, ""))) return false
+            // Only lines where the user talks about themselves ("I live in Springfield", "my age is 41") can support a fact.
+            val selfLines = userLines.filter { FIRST_PERSON.containsMatchIn(it) && !looksLikeQuestion(it) }
+            if (selfLines.isEmpty()) return false
+            val said = selfLines.flatMap { factWords(it) }.toHashSet()
+            val content = factWords(fact).filter { it !in FACT_STOP_WORDS }
             if (content.isEmpty()) return false
             return content.count { it in said }.toFloat() / content.size >= 0.6f
         }
+
+        private val USER_LABEL = Regex("^user\\s*:\\s*", RegexOption.IGNORE_CASE)
+        private val FIRST_PERSON = Regex("\\b(i|i'm|i've|i'd|i'll|my|me|mine|myself)\\b", RegexOption.IGNORE_CASE)
+        private val QUESTION_START = Regex(
+            "^(what|who|whom|whose|where|when|why|how|which|is|are|am|was|were|do|does|did|can|could|will|would|should|shall|tell me)\\b",
+            RegexOption.IGNORE_CASE,
+        )
+
+        private fun looksLikeQuestion(s: String): Boolean {
+            val t = s.trim()
+            return t.endsWith("?") || QUESTION_START.containsMatchIn(t)
+        }
+
+        /** Lowercase words with a plural/third-person "s" dropped, so "lives"/"live" and "likes"/"like" match. */
+        private fun factWords(s: String): List<String> =
+            s.lowercase().split(WORD_SPLIT).filter { it.isNotEmpty() }
+                .map { if (it.length > 3 && it.endsWith("s") && !it.endsWith("ss")) it.dropLast(1) else it }
     }
 }

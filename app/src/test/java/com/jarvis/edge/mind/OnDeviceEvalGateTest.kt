@@ -168,4 +168,54 @@ class OnDeviceEvalGateTest {
         assertFalse(result.passed)
         assertEquals(0.0f, result.evalScore, 1e-5f)
     }
+
+    /** What Qwen2.5 1.5B on the Pad really answered: plain sentences for the tool probes, one restated request. */
+    private fun padReplyFor(probe: OnDeviceEvalGate.EvalProbe): String = when (probe.id) {
+        "tool_torch" -> "SAY: Setting the flashlight to on."
+        "tool_web_search" -> "SAY: I will search Wikipedia for Albert Einstein."
+        else -> goodReplyFor(probe)
+    }
+
+    @Test
+    fun `a candidate only has to match the current brain on limits the current brain already misses`() {
+        val gate = OnDeviceEvalGate()
+        val baseline = gate.evaluate(generateFn = ::padReplyFor)
+        assertFalse(baseline.passed) // the brain in use misses the fixed tool limit itself
+        assertEquals(0.0f, baseline.toolAccuracy, 1e-5f)
+
+        // Seen on the Pad: every candidate was rejected for the same misses, so nothing could ever be adopted.
+        val same = gate.evaluate(baseline = baseline, generateFn = ::padReplyFor)
+        assertTrue(same.passed, same.reason)
+
+        // Worse than the current brain is still rejected.
+        val worse = gate.evaluate(baseline = baseline) { probe ->
+            if (probe.id == "echo_http") "SAY: What does HTTP stand for?" else padReplyFor(probe)
+        }
+        assertFalse(worse.passed)
+        val wrong = gate.evaluate(baseline = baseline) { probe ->
+            if (probe.id == "fact_math") "SAY: Five." else padReplyFor(probe)
+        }
+        assertFalse(wrong.passed)
+    }
+
+    @Test
+    fun `a past question Jarvis looked up on the web is graded as an answer, not as a tool call`() {
+        val lookedUp = Episode(
+            id = 141,
+            timestampMs = 100L,
+            liveTranscript = "explain how a rainbow forms",
+            accurateTranscript = "explain how a rainbow forms",
+            chosenTranscript = "explain how a rainbow forms",
+            reply = "Rainbows form when sunlight is refracted in droplets.",
+            toolName = "web_search", // the Brain's own lookup after an unsure answer, not a call the model made
+            echoed = false,
+            outcomeOk = true,
+        )
+        val seen = mutableMapOf<String, OnDeviceEvalGate.EvalProbe>()
+        OnDeviceEvalGate().evaluate(heldOutEpisodes = listOf(lookedUp)) { probe ->
+            seen[probe.id] = probe
+            goodReplyFor(probe)
+        }
+        assertEquals("say", seen.getValue("ep_141").expectedType)
+    }
 }

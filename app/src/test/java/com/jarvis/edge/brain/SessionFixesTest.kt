@@ -37,6 +37,26 @@ class SessionFixesTest {
     }
 
     @Test
+    fun `the user's own lines echoed back by the model are not facts`() {
+        // Seen on the Pad: the extraction model copied its "User: ..." input lines back as facts.
+        val said = listOf("What is the capital of France?", "Where are you right now?", "Hey, y'all, this.", "A. Jarvis.")
+        assertFalse(ReflectionWorker.isAboutUser("User: What is the capital of France?", said))
+        assertFalse(ReflectionWorker.isAboutUser("User: Where are you right now?", said))
+        assertFalse(ReflectionWorker.isAboutUser("User: Hey, y'all, this.", said))
+        assertFalse(ReflectionWorker.isAboutUser("User: A. Jarvis.", said))
+        // A question the user asks about themselves is still not a statement of fact.
+        assertFalse(ReflectionWorker.isAboutUser("User: What is my age?", listOf("What is my age?")))
+        // Seen on the Pad: a request containing "me", echoed back as raw JSON.
+        val asked = listOf("Tell me about the history of the Roman Empire")
+        assertFalse(ReflectionWorker.isAboutUser("{\"User\":\"Tell me about the history of the Roman Empire\"}", asked))
+        assertFalse(ReflectionWorker.isAboutUser("User asked about the history of the Roman Empire", asked))
+        assertFalse(ReflectionWorker.isAboutUser("User wants to know about the Roman Empire", listOf("show me the Roman Empire")))
+        // Real statements about themselves still count.
+        assertTrue(ReflectionWorker.isAboutUser("User's favourite sport is cricket", listOf("my favourite sport is cricket", "who won the match")))
+        assertTrue(ReflectionWorker.isAboutUser("User lives in Springfield", listOf("I live in Springfield now")))
+    }
+
+    @Test
     fun `learning report says only what happened`() {
         fun r(n: Int, f: Int = 0, v: Int = 0, aborted: Boolean = false) = ReflectionWorker.ReflectionReport(n, f, v, 0, 0, aborted)
         assertEquals("Done. I went through 4 conversations and learned 1 fact about you, 2 new words.", ReflectionWorker.learnNowSummary(r(4, 1, 2), false))

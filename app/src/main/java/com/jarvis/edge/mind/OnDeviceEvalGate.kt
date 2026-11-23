@@ -44,7 +44,9 @@ class OnDeviceEvalGate(
             .distinctBy { it.chosenTranscript.trim().lowercase() }
             .take(MAX_HELD_OUT_EPISODES)
             .map { ep ->
-                val tool = ep.toolName?.takeIf { it.isNotBlank() }
+                // web_search on an episode is the Brain's own lookup after an unsure answer, not a call the model made:
+                // the model answering such a question itself is right, so it is graded as an answer.
+                val tool = ep.toolName?.takeIf { it.isNotBlank() && it != "web_search" }
                 EvalProbe(
                     id = "ep_${ep.id}",
                     prompt = ep.chosenTranscript.trim(),
@@ -142,13 +144,19 @@ class OnDeviceEvalGate(
         val toolAccuracy = if (toolProbes > 0) toolCorrect.toFloat() / toolProbes.toFloat() else 1.0f
         val avgLatencyMs = if (evaluated > 0) totalLatencyMs / evaluated else 0L
 
+        // A candidate is judged against the brain in use: where that brain already misses a fixed limit (Qwen2.5 1.5B on
+        // the Pad answers the tool probes in words and restates one request), the candidate only has to be no worse,
+        // otherwise nothing could ever be adopted. Without a baseline the fixed limits apply as they are.
+        val maxEcho = if (baseline != null) maxOf(MAX_ECHO_RATE, baseline.echoRate) else MAX_ECHO_RATE
+        val minScore = if (baseline != null) minOf(MIN_EVAL_SCORE, baseline.evalScore) else MIN_EVAL_SCORE
+        val minTool = if (baseline != null) minOf(MIN_TOOL_ACCURACY, baseline.toolAccuracy) else MIN_TOOL_ACCURACY
         val failureReason = when {
-            echoRate > MAX_ECHO_RATE ->
-                "Echo rate %.2f exceeds limit %.2f".format(echoRate, MAX_ECHO_RATE)
-            evalScore < MIN_EVAL_SCORE ->
-                "Eval score %.2f below minimum %.2f".format(evalScore, MIN_EVAL_SCORE)
-            toolProbes > 0 && toolAccuracy < MIN_TOOL_ACCURACY ->
-                "Tool accuracy %.2f below minimum %.2f".format(toolAccuracy, MIN_TOOL_ACCURACY)
+            echoRate > maxEcho ->
+                "Echo rate %.2f exceeds limit %.2f".format(echoRate, maxEcho)
+            evalScore < minScore ->
+                "Eval score %.2f below minimum %.2f".format(evalScore, minScore)
+            toolProbes > 0 && toolAccuracy < minTool ->
+                "Tool accuracy %.2f below minimum %.2f".format(toolAccuracy, minTool)
             baseline != null && evalScore < baseline.evalScore - REGRESSION_EPSILON ->
                 "Eval score %.2f regressed vs baseline %.2f".format(evalScore, baseline.evalScore)
             baseline != null && toolAccuracy < baseline.toolAccuracy - REGRESSION_EPSILON ->

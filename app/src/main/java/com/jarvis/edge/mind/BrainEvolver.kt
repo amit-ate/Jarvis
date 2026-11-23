@@ -44,7 +44,9 @@ class BrainEvolver(
             return true
         }
         val hour = hourOfDayProvider(clockMs())
-        return snapshot.charging && isOvernightWindow(hour)
+        // The Pad sleeps unplugged, so charging-only meant evolution never ran there; a short overnight run on a battery
+        // that is at least half full costs a few percent.
+        return isOvernightWindow(hour) && (snapshot.charging || snapshot.batteryPct >= MIN_BATTERY_PCT_UNPLUGGED)
     }
 
     fun buildContrastivePairs(
@@ -371,6 +373,35 @@ class BrainEvolver(
     companion object {
         const val JVEC_HEADER_BYTES = 24
         const val JVEC_VERSION = 1
+        const val MIN_BATTERY_PCT_UNPLUGGED = 50
+
+        /**
+         * Makes the active model version belong to [baseModel], the chat model actually loaded. After a model switch the
+         * newest version of that model with a usable adapter is re-activated, else a fresh base version is recorded, so an
+         * adapter trained for one model is never steered into another and evolution compares like with like.
+         */
+        fun ensureActiveVersionFor(
+            store: MindRepository,
+            baseModel: String,
+            adapterUsable: (String) -> Boolean,
+        ): ModelVersion {
+            val versions = store.listModelVersions()
+            versions.firstOrNull { it.active && it.baseModel == baseModel }?.let { return it }
+            val reusable = versions
+                .filter { it.baseModel == baseModel && !it.adapterPath.isNullOrBlank() && adapterUsable(it.adapterPath) }
+                .maxByOrNull { it.createdAtMs }
+            if (reusable != null && store.activateModelVersion(reusable.id)) {
+                return store.listModelVersions().first { it.id == reusable.id }
+            }
+            return store.recordModelVersion(
+                baseModel = baseModel,
+                adapterPath = null,
+                evalScore = 0.0f,
+                echoRate = 0.0f,
+                toolAccuracy = 0.0f,
+                active = true,
+            )
+        }
         private const val MIN_CONTRAST_PAIRS = 4
         private const val MAX_CONTRAST_PAIRS = 8
 
