@@ -231,7 +231,10 @@ class JarvisService : Service() {
             ACTION_MANUAL_WAKE -> manualWakeRequested.set(true)
             ACTION_SETUP_RETRY -> setupInstaller?.retry(intent.getStringExtra(EXTRA_TEXT).orEmpty())
             ACTION_SETUP_START_WITHOUT -> setupInstaller?.startWithout()
-            ACTION_SETUP_WIFI_ONLY -> setupNet.wifiOnly = intent.getBooleanExtra(EXTRA_ON, true)
+            ACTION_SETUP_WIFI_ONLY -> {
+                setupNet.wifiOnly = intent.getBooleanExtra(EXTRA_ON, true)
+                setupInstaller?.refresh()
+            }
             ACTION_ENROLL -> intent.getStringExtra(EXTRA_TEXT)?.trim()?.takeIf { it.isNotEmpty() }?.let { enrollLabel.set(it) }
             ACTION_TEXT_INPUT -> {
                 val text = intent.getStringExtra(EXTRA_TEXT)?.trim().orEmpty()
@@ -311,21 +314,7 @@ class JarvisService : Service() {
         if (voiceJob?.isActive == true) return
         voiceJob = serviceScope.launch {
             val modelRoot = ModelPaths.rootFor(BuildConfig.DEBUG)
-            val planner = SetupPlanner(modelRoot, loadManifest())
-            val downloader = Downloader()
-            val installer = Installer(
-                root = modelRoot,
-                manifest = planner.manifest,
-                fetch = Fetch { url, size, sha, part, onBytes -> downloader.fetch(url, size, sha, part, onBytes) },
-                net = setupNet,
-                bundled = { path -> runCatching { assets.open("models/bundled/$path").use { it.readBytes() } }.getOrNull() },
-            )
-            setupInstaller = installer
-            if (planner.needsSetup()) {
-                runFirstSetup(installer)
-            } else if (planner.marker() == SetupMarker.EXTRAS_PENDING) {
-                serviceScope.launch(Dispatchers.IO) { installer.runExtrasInBackground() }
-            }
+            checkSetup(modelRoot)
             val paths = ModelPaths(modelRoot, ModelPaths.resolveLlmFileName(modelRoot))
             android.util.Log.i("JarvisBrain", "chat model: ${paths.llmFileName} (template ${PromptBuilder.templateFor(paths.llmFileName)})")
             val missingSpeech = paths.missingSpeech()
@@ -1524,6 +1513,33 @@ class JarvisService : Service() {
 
     private fun loadManifest(): ModelManifest =
         ModelManifest.parse(assets.open("models/manifest.json").bufferedReader().use { it.readText() })
+
+    /**
+     * Runs the first setup when the basics are missing, or resumes the extras after "Start without it". If the bundled
+     * manifest cannot be read, the check is skipped and the voice pipeline starts as it always did.
+     */
+    private suspend fun checkSetup(modelRoot: File) {
+        val planner = try {
+            SetupPlanner(modelRoot, loadManifest())
+        } catch (e: Exception) {
+            android.util.Log.e("JarvisSetup", "model manifest unreadable; skipping the setup check", e)
+            return
+        }
+        val downloader = Downloader()
+        val installer = Installer(
+            root = modelRoot,
+            manifest = planner.manifest,
+            fetch = Fetch { url, size, sha, part, onBytes -> downloader.fetch(url, size, sha, part, onBytes) },
+            net = setupNet,
+            bundled = { path -> runCatching { assets.open("models/bundled/$path").use { it.readBytes() } }.getOrNull() },
+        )
+        setupInstaller = installer
+        if (planner.needsSetup()) {
+            runFirstSetup(installer)
+        } else if (planner.marker() == SetupMarker.EXTRAS_PENDING) {
+            serviceScope.launch(Dispatchers.IO) { installer.runExtrasInBackground() }
+        }
+    }
 
     /**
      * Runs the first setup while the screen shows [setup] and the notification shows the percentage. Returns when the

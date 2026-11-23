@@ -76,6 +76,9 @@ class Installer(
         commands.trySend(Command.StartWithout)
     }
 
+    /** Republishes the current progress, so a changed [NetworkGate.wifiOnly] shows at once. Safe from any thread. */
+    fun refresh() = publish()
+
     private suspend fun runPlan(plan: List<ManifestItem>, interactive: Boolean): Boolean {
         root.mkdirs()
         beginRun(plan)
@@ -88,18 +91,24 @@ class Installer(
             if (shortfall == null && failed.isEmpty()) {
                 planner.writeMarker(SetupMarker.NONE)
                 complete()
-                finished = true
-                publish()
+                synchronized(this) {
+                    finished = true
+                    publish()
+                }
                 return true
             }
             if (!interactive) {
-                blockedBy = shortfall
-                publish()
+                synchronized(this) {
+                    blockedBy = shortfall
+                    publish()
+                }
                 return false
             }
-            canStartWithout = shortfall == null && failed.none { it.required }
-            blockedBy = shortfall ?: failed.firstOrNull { it.required }?.label
-            publish()
+            synchronized(this) {
+                canStartWithout = shortfall == null && failed.none { it.required }
+                blockedBy = shortfall ?: failed.firstOrNull { it.required }?.label
+                publish()
+            }
             when (val command = commands.receive()) {
                 is Command.Retry -> when {
                     command.id.isEmpty() -> shortfall = spaceShortfall(plan)
@@ -109,8 +118,10 @@ class Installer(
                 Command.StartWithout -> if (canStartWithout) {
                     planner.writeMarker(SetupMarker.EXTRAS_PENDING)
                     complete()
-                    finished = true
-                    publish()
+                    synchronized(this) {
+                        finished = true
+                        publish()
+                    }
                     return true
                 }
             }
@@ -197,6 +208,7 @@ class Installer(
         }
     }
 
+    @Synchronized
     private fun updateNet(state: NetState) {
         if (state != netState) {
             netState = state
@@ -216,6 +228,7 @@ class Installer(
 
     private fun gb(bytes: Long): String = "%.1f".format(Locale.US, bytes / 1e9)
 
+    @Synchronized
     private fun beginRun(plan: List<ManifestItem>) {
         states.clear()
         plan.forEach { states[it.id] = ItemProgress(it.id, it.label, it.required, ItemPhase.QUEUED, 0L, it.size) }
@@ -229,6 +242,7 @@ class Installer(
     }
 
     /** Byte updates are throttled; a change of phase is always published. */
+    @Synchronized
     private fun onBytes(item: ManifestItem, bytes: Long) {
         val current = states.getValue(item.id)
         val phase = if (bytes >= item.size) ItemPhase.VERIFYING else ItemPhase.DOWNLOADING
@@ -236,6 +250,7 @@ class Installer(
         if (phase != current.phase || clockMs() - lastPublishMs >= BYTE_PUBLISH_MS) publish()
     }
 
+    @Synchronized
     private fun setItem(
         item: ManifestItem,
         phase: ItemPhase,
@@ -246,6 +261,7 @@ class Installer(
         publish()
     }
 
+    @Synchronized
     private fun publish() {
         val now = clockMs()
         lastPublishMs = now

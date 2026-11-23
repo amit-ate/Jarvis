@@ -385,6 +385,19 @@ class InstallerTest {
     }
 
     @Test
+    fun `refresh republishes the Wi-Fi switch after the gate changes`(@TempDir root: File) {
+        val a = file("a")
+        val gate = FakeGate(NetState.ALLOWED, wifiOnly = true)
+        val installer = installer(root, listOf(a), fetchFor(a), gate)
+        assertTrue(installer.progress.value.wifiOnly)
+
+        gate.wifiOnly = false
+        installer.refresh()
+
+        assertFalse(installer.progress.value.wifiOnly)
+    }
+
+    @Test
     fun `progress fraction and eta`() {
         val progress = SetupProgress(
             items = listOf(
