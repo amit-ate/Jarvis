@@ -65,14 +65,17 @@ class Downloader(
         if (!resumable) part.delete()
         sidecar.writeText(JSONObject().put("url", url).put("size", size).toString())
 
+        // The digest follows the bytes of the part as they are written, so the file is not read again afterwards.
+        val digest = MessageDigest.getInstance("SHA-256")
         if (have < size) {
-            transfer(url, size, part, have, onBytes)
+            transfer(url, size, part, have, digest, onBytes)
         } else {
+            hashPrefix(part, digest, size) // a complete part: the one read that verifies it
             onBytes(size)
         }
         FileOutputStream(part, true).use { it.fd.sync() }
 
-        if (sha256Of(part) != sha256.lowercase()) {
+        if (hex(digest.digest()) != sha256.lowercase()) {
             part.delete()
             sidecar.delete()
             return FetchResult.Failed("Checksum mismatch", retryable = true)
@@ -81,8 +84,18 @@ class Downloader(
         return FetchResult.Ok(part)
     }
 
-    /** Appends the rest of the body to [part], starting at byte [have]. Throws [Abort] on an HTTP failure. */
-    private suspend fun transfer(url: String, size: Long, part: File, have: Long, onBytes: (Long) -> Unit) {
+    /**
+     * Appends the rest of the body to [part], starting at byte [have], and feeds [digest] every byte written.
+     * Throws [Abort] on an HTTP failure.
+     */
+    private suspend fun transfer(
+        url: String,
+        size: Long,
+        part: File,
+        have: Long,
+        digest: MessageDigest,
+        onBytes: (Long) -> Unit,
+    ) {
         val conn = connect(url, have)
         try {
             val code = conn.responseCode
@@ -92,8 +105,13 @@ class Downloader(
             }
             if (code != 200 && code != 206) throw Abort(FetchResult.Failed("HTTP $code", retryable = true))
 
-            // A 200 answer to a Range request is the whole file again, so the old bytes must go.
+            // A 200 answer to a Range request is the whole file again, so the old bytes must go, and so must their hash.
             val start = if (code == 206) have else 0L
+            if (start > 0) {
+                hashPrefix(part, digest, start)
+            } else {
+                digest.reset()
+            }
             var written = start
             val buffer = ByteArray(CHUNK_BYTES)
             conn.inputStream.use { input ->
@@ -103,6 +121,7 @@ class Downloader(
                         val n = input.read(buffer)
                         if (n < 0) break
                         out.write(buffer, 0, n)
+                        digest.update(buffer, 0, n)
                         written += n
                         onBytes(written)
                     }
@@ -139,19 +158,22 @@ class Downloader(
         throw Abort(FetchResult.Failed("Too many redirects", retryable = true))
     }
 
-    private suspend fun sha256Of(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
+    /** Feeds the first [bytes] of [file] to [digest]. */
+    private suspend fun hashPrefix(file: File, digest: MessageDigest, bytes: Long) {
         val buffer = ByteArray(CHUNK_BYTES)
+        var left = bytes
         file.inputStream().use { input ->
-            while (true) {
+            while (left > 0) {
                 currentCoroutineContext().ensureActive()
-                val n = input.read(buffer)
+                val n = input.read(buffer, 0, minOf(buffer.size.toLong(), left).toInt())
                 if (n < 0) break
                 digest.update(buffer, 0, n)
+                left -= n
             }
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
     }
+
+    private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
     private fun sidecarMatches(sidecar: File, url: String, size: Long): Boolean = try {
         val json = JSONObject(sidecar.readText())
