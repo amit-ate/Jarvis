@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "base_model": "qwen2.5-0.5b-instruct-q4_0.gguf",
+  "vlm_model": "SmolVLM-256M-Instruct-Q8_0.gguf",
+  "max_ram_budget_mb": 2600,
+  "estimated_resident_mb": 1150,
+  "experts": [
+    {
+      "domain": "CONVERSATION",
+      "lora_path": null,
+      "lora_scale": 1.0,
+      "cvec_path": "conversation_expert.jvec",
+      "cvec_scale": 0.35,
+      "cvec_layer_start": 8,
+      "cvec_layer_end": 21,
+      "optional": true,
+      "temperature": 0.5,
+      "repeat_penalty": 1.2,
+      "keywords": [
+        "hello",
+        "hi",
+        "chat",
+        "joke",
+        "story"
+      ]
+    },
+    {
+      "domain": "TOOL_USE",
+      "lora_path": null,
+      "lora_scale": 1.0,
+      "cvec_path": "tool_expert.jvec",
+      "cvec_scale": 0.3,
+      "cvec_layer_start": 8,
+      "cvec_layer_end": 21,
+      "optional": true,
+      "temperature": 0.25,
+      "repeat_penalty": 1.12,
+      "keywords": [
+        "turn",
+        "set",
+        "timer",
+        "alarm",
+        "volume",
+        "brightness",
+        "tv",
+        "ac"
+      ]
+    },
+    {
+      "domain": "REASONING",
+      "lora_path": null,
+      "lora_scale": 1.0,
+      "cvec_path": "reasoning_expert.jvec",
+      "cvec_scale": 0.4,
+      "cvec_layer_start": 8,
+      "cvec_layer_end": 21,
+      "optional": true,
+      "temperature": 0.4,
+      "repeat_penalty": 1.22,
+      "keywords": [
+        "why",
+        "how",
+        "explain",
+        "compare",
+        "calculate",
+        "difference"
+      ]
+    },
+    {
+      "domain": "KNOWLEDGE",
+      "lora_path": null,
+      "lora_scale": 1.0,
+      "cvec_path": "anti_echo_direct.jvec",
+      "cvec_scale": 0.35,
+      "cvec_layer_start": 8,
+      "cvec_layer_end": 21,
+      "optional": true,
+      "temperature": 0.35,
+      "repeat_penalty": 1.18,
+      "keywords": [
+        "who",
+        "what",
+        "when",
+        "where",
+        "capital",
+        "president",
+        "search"
+      ]
+    },
+    {
+      "domain": "MEMORY",
+      "lora_path": null,
+      "lora_scale": 1.0,
+      "cvec_path": "anti_echo_direct.jvec",
+      "cvec_scale": 0.3,
+      "cvec_layer_start": 8,
+      "cvec_layer_end": 21,
+      "optional": true,
+      "temperature": 0.35,
+      "repeat_penalty": 1.18,
+      "keywords": [
+        "remember",
+        "recall",
+        "forget",
+        "note",
+        "learned",
+        "know about me"
+      ]
+    },
+    {
+      "domain": "VISION",
+      "lora_path": null,
+      "lora_scale": 1.0,
+      "cvec_path": "anti_echo_direct.jvec",
+      "cvec_scale": 0.25,
+      "cvec_layer_start": 8,
+      "cvec_layer_end": 21,
+      "optional": true,
+      "temperature": 0.25,
+      "repeat_penalty": 1.15,
+      "keywords": [
+        "see",
+        "look",
+        "holding",
+        "read this",
+        "camera"
+      ]
+    }
+  ]
+}
