@@ -2,8 +2,12 @@ package com.jarvis.edge.setup
 
 import com.jarvis.edge.core.AtomicFiles
 import com.jarvis.edge.core.ModelPaths
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -120,7 +124,9 @@ class Installer(
         while (true) {
             awaitNetwork()
             setItem(item, ItemPhase.DOWNLOADING, bytes = minOf(part.length(), item.size))
-            val failure = when (val result = fetch.fetch(item.url, item.size, item.sha256, part) { onBytes(item, it) }) {
+            val result = fetchWhileOnline(item, part)
+            if (result == null) continue // left the network mid-transfer: not an attempt, the part is kept
+            val failure = when (result) {
                 is FetchResult.Failed -> result
                 is FetchResult.Ok -> {
                     val installFailure = install(item, part)
@@ -140,6 +146,35 @@ class Installer(
         }
     }
 
+    /**
+     * Runs one transfer while a watcher polls the network every [netPollMs]. If the network leaves ALLOWED (Wi-Fi
+     * dropped), the transfer is cancelled and null is returned; the Downloader keeps the part for a resume.
+     */
+    private suspend fun fetchWhileOnline(item: ManifestItem, part: File): FetchResult? = coroutineScope {
+        var interrupted = false
+        val transfer = async { fetch.fetch(item.url, item.size, item.sha256, part) { onBytes(item, it) } }
+        val watcher = launch {
+            while (true) {
+                delay(netPollMs)
+                val state = net.state()
+                if (state != NetState.ALLOWED) {
+                    interrupted = true
+                    updateNet(state)
+                    transfer.cancel()
+                    break
+                }
+            }
+        }
+        try {
+            transfer.await()
+        } catch (e: CancellationException) {
+            if (!interrupted) throw e
+            null
+        } finally {
+            watcher.cancel()
+        }
+    }
+
     /** Moves the verified [part] into place. Returns null on success, else the failure to count as an attempt. */
     private fun install(item: ManifestItem, part: File): FetchResult.Failed? = try {
         setItem(item, ItemPhase.UNPACKING)
@@ -156,12 +191,16 @@ class Installer(
     private suspend fun awaitNetwork() {
         while (true) {
             val state = net.state()
-            if (state != netState) {
-                netState = state
-                publish()
-            }
+            updateNet(state)
             if (state == NetState.ALLOWED) return
             delay(netPollMs)
+        }
+    }
+
+    private fun updateNet(state: NetState) {
+        if (state != netState) {
+            netState = state
+            publish()
         }
     }
 

@@ -3,6 +3,7 @@ package com.jarvis.edge.setup
 import com.jarvis.edge.core.ModelPaths
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -62,7 +63,7 @@ class InstallerTest {
     private fun installer(
         root: File,
         items: List<ManifestItem>,
-        fetch: FakeFetch,
+        fetch: Fetch,
         gate: FakeGate = FakeGate(),
         bundled: (String) -> ByteArray? = { null },
         freeBytes: (File) -> Long = { Long.MAX_VALUE },
@@ -329,6 +330,58 @@ class InstallerTest {
         assertEquals("t", File(root, "kws/tokens.txt").readText())
         assertEquals("kw", File(root, "kws/keywords.txt").readText())
         assertFalse(File(root, "kws.part").exists())
+    }
+
+    /** Writes the first half, then suspends until cancelled; the second call writes the rest. */
+    private class SuspendingFetch : Fetch {
+        val calls = mutableListOf<String>()
+        var cancelledMidTransfer = false
+
+        override suspend fun fetch(url: String, size: Long, sha256: String, part: File, onBytes: (Long) -> Unit): FetchResult {
+            calls += url
+            part.parentFile?.mkdirs()
+            if (calls.size == 1) {
+                part.writeBytes(ByteArray(50))
+                onBytes(50L)
+                try {
+                    awaitCancellation()
+                } finally {
+                    cancelledMidTransfer = true
+                }
+            }
+            part.appendBytes(ByteArray((size - part.length()).toInt()))
+            onBytes(size)
+            return FetchResult.Ok(part)
+        }
+    }
+
+    @Test
+    fun `leaving Wi-Fi cancels the transfer, resumes on Wi-Fi, and is not counted as an attempt`(@TempDir root: File) = runTest {
+        val a = file("a", size = 100L)
+        val fetch = SuspendingFetch()
+        val gate = FakeGate(NetState.ALLOWED)
+        val installer = installer(root, listOf(a), fetch, gate, netPollMs = 1_000L)
+
+        val setup = async { installer.runFirstSetup() }
+        advanceTimeBy(1_500L)
+        assertEquals(1, fetch.calls.size)
+
+        gate.current = NetState.WAITING_FOR_WIFI
+        advanceTimeBy(1_500L)
+
+        assertTrue(fetch.cancelledMidTransfer)
+        assertEquals(NetState.WAITING_FOR_WIFI, installer.progress.value.net)
+        assertEquals(ItemPhase.DOWNLOADING, installer.progress.value.items.single().phase)
+        assertFalse(setup.isCompleted)
+
+        gate.current = NetState.ALLOWED
+        advanceUntilIdle()
+
+        assertTrue(setup.await())
+        assertEquals(2, fetch.calls.size)
+        assertEquals(100L, File(root, "a").length())
+        assertEquals(NetState.ALLOWED, installer.progress.value.net)
+        assertTrue(installer.progress.value.items.single().phase == ItemPhase.DONE)
     }
 
     @Test
